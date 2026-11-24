@@ -1,0 +1,17 @@
+node_modules/
+build/
+!build/icon.ico
+dist/
+dist-electron/
+release-windows/
+android/.gradle/
+android/app/build/
+android/build/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+*.keystore
+*.jks
+

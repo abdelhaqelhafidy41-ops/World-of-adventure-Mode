@@ -1,0 +1,31 @@
+appId: com.woa.modcreator
+productName: World of Adventure Mod Creator
+copyright: Copyright © World of Adventure Mod Creator
+directories:
+  output: release-windows
+  buildResources: build
+files:
+  - dist/**/*
+  - dist-electron/**/*
+  - package.json
+  - version.json
+win:
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+nsis:
+  artifactName: World-of-Adventure-Mod-Creator-v${version}-Windows-Setup.${ext}
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: World of Adventure Mod Creator
+portable:
+  artifactName: World-of-Adventure-Mod-Creator-v${version}-Windows-Portable.${ext}
+asar: true

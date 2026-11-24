@@ -1,0 +1,8 @@
+{
+  "name": "Remix Remix WoA Mod Studio",
+  "description": "A professional, offline-capable TypeScript development environment for building and exporting World of Adventure game mods.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -1,0 +1,57 @@
+name: Build Windows Installer & Portable EXE
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify version consistency
+        run: node scripts/sync-version.mjs --check
+
+      - name: Typecheck and run automated tests
+        run: |
+          npm run lint
+          npm test
+
+      - name: Package Windows Portable and Setup EXEs
+        run: npm run pack:windows
+
+      - name: Verify generated Windows executables
+        shell: pwsh
+        run: |
+          $version = (Get-Content -Raw version.json | ConvertFrom-Json).version
+          $portable = "release-windows/World-of-Adventure-Mod-Creator-v$version-Windows-Portable.exe"
+          $setup = "release-windows/World-of-Adventure-Mod-Creator-v$version-Windows-Setup.exe"
+          foreach ($file in @($portable, $setup)) {
+            if (-not (Test-Path $file) -or ((Get-Item $file).Length -le 0)) {
+              Write-Error "Missing or empty Windows build artifact: $file"
+              exit 1
+            }
+            Write-Host "Verified Windows artifact: $file"
+          }
+
+      - name: Upload Windows EXE artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: World-of-Adventure-Mod-Creator-Windows
+          path: |
+            release-windows/*-Windows-Portable.exe
+            release-windows/*-Windows-Setup.exe
+          if-no-files-found: error

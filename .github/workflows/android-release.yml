@@ -1,0 +1,110 @@
+name: Build Signed Android APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify version consistency
+        run: node scripts/sync-version.mjs --check
+
+      - name: Typecheck and run automated tests
+        run: |
+          npm run lint
+          npm test
+
+      - name: Validate required Android signing secrets
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          for var in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [ -z "${!var}" ]; then
+              echo "ERROR: Required GitHub Secret $var is missing or empty. Android release signing cannot proceed."
+              exit 1
+            fi
+          done
+
+      - name: Build Capacitor web bundle and sync Android project
+        run: npm run android:sync
+
+      - name: Decode release keystore and build signed APK
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          KEYSTORE_FILE="${RUNNER_TEMP}/woa-release.jks"
+          printf '%s' "${ANDROID_KEYSTORE_BASE64}" | tr -d '\r\n' | base64 --decode > "${KEYSTORE_FILE}"
+          if [ ! -s "${KEYSTORE_FILE}" ]; then
+            echo "ERROR: Decoded keystore file is empty."
+            exit 1
+          fi
+
+          chmod +x android/gradlew
+          export ANDROID_KEYSTORE_PATH="${KEYSTORE_FILE}"
+          pushd android >/dev/null
+          ./gradlew assembleRelease --no-daemon
+          popd >/dev/null
+
+          VERSION="$(node -e "console.log(JSON.parse(require('fs').readFileSync('version.json','utf8')).version)")"
+          SOURCE_APK="$(find android/app/build/outputs/apk/release -name '*release*.apk' | head -n 1)"
+          if [ -z "${SOURCE_APK}" ] || [ ! -s "${SOURCE_APK}" ]; then
+            echo "ERROR: Release APK not found after Gradle build."
+            exit 1
+          fi
+
+          APKSIGNER="$(find "${ANDROID_HOME}/build-tools" -name apksigner | sort -V | tail -n 1)"
+          if [ -z "${APKSIGNER}" ]; then
+            echo "ERROR: apksigner tool not found in ANDROID_HOME/build-tools."
+            exit 1
+          fi
+          "${APKSIGNER}" verify --verbose --print-certs "${SOURCE_APK}"
+
+          mkdir -p release-android
+          OUT_APK="release-android/World-of-Adventure-Mod-Creator-v${VERSION}.apk"
+          cp "${SOURCE_APK}" "${OUT_APK}"
+          echo "Verified signed APK: ${OUT_APK}"
+
+      - name: Clean up decoded keystore
+        if: always()
+        shell: bash
+        run: rm -f "${RUNNER_TEMP}/woa-release.jks"
+
+      - name: Upload signed Android APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: World-of-Adventure-Mod-Creator-Android-APK
+          path: release-android/*.apk
+          if-no-files-found: error

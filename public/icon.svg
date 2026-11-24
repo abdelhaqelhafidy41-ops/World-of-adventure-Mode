@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <rect width="512" height="512" rx="96" fill="#0B0F17"/>
+  <rect x="24" y="24" width="464" height="464" rx="80" stroke="#1E293B" stroke-width="4"/>
+  <!-- Isometric 3D forge cube representing 3D mod architecture -->
+  <path d="M256 108L396 188V344L256 424L116 344V188L256 108Z" fill="#121823" stroke="#3B82F6" stroke-width="14" stroke-linejoin="round"/>
+  <path d="M256 108L396 188L256 268L116 188L256 108Z" fill="#1E293B" stroke="#60A5FA" stroke-width="10" stroke-linejoin="round"/>
+  <path d="M256 268V424" stroke="#3B82F6" stroke-width="12" stroke-linecap="round"/>
+  <path d="M256 268L396 188" stroke="#60A5FA" stroke-width="10" stroke-linecap="round"/>
+  <path d="M256 268L116 188" stroke="#60A5FA" stroke-width="10" stroke-linecap="round"/>
+  <!-- Forge diamond core -->
+  <path d="M256 156L302 188L256 220L210 188L256 156Z" fill="#F59E0B"/>
+</svg>

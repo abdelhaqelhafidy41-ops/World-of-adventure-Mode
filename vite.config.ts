@@ -95,8 +95,7 @@ export default defineConfig(() => {
           ],
         },
         devOptions: {
-          enabled: !disablePwa,
-          type: 'module',
+          enabled: false,
         },
       }),
       // Copies src/assets into dist/ so root-relative URLs like

@@ -195,6 +195,9 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
 }) => {
   const { t, language } = useI18n();
   const viewportRef = useRef<Viewport3DHandle>(null);
+  const onSelectAssetRef = useRef(onSelectAsset);
+  onSelectAssetRef.current = onSelectAsset;
+  const lastFocusTokenRef = useRef<number | null>(null);
 
   const [leftTab, setLeftTab] = useState<LeftTab>('scene');
   const [centerTab, setCenterTab] = useState<CenterTab>('viewport');
@@ -352,7 +355,7 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
         return;
       }
       if (issue.targetType === 'asset' && issue.targetRef) {
-        onSelectAsset(issue.targetRef);
+        onSelectAssetRef.current(issue.targetRef);
         setCenterTab('viewport');
         setMobilePane('viewport');
         return;
@@ -380,11 +383,12 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
         setMobilePane('viewport');
       }
     },
-    [onSelectAsset]
+    []
   );
 
   useEffect(() => {
-    if (pendingIssueFocus) {
+    if (pendingIssueFocus && pendingIssueFocus.token !== lastFocusTokenRef.current) {
+      lastFocusTokenRef.current = pendingIssueFocus.token;
       handleInspectIssue(pendingIssueFocus.issue);
     }
   }, [pendingIssueFocus, handleInspectIssue]);
@@ -458,11 +462,13 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
 
     const current = project.assets.find((a) => a.id === info.assetId);
     if (!current) return;
+    const eqNum = (a?: number, b?: number) =>
+      a === b || (Number.isNaN(a) && Number.isNaN(b));
     const sameDims =
-      current.dimensions?.width === info.dimensions.width &&
-      current.dimensions?.height === info.dimensions.height &&
-      current.dimensions?.depth === info.dimensions.depth;
-    const sameTris = current.triangleEstimate === info.triangleEstimate;
+      eqNum(current.dimensions?.width, info.dimensions.width) &&
+      eqNum(current.dimensions?.height, info.dimensions.height) &&
+      eqNum(current.dimensions?.depth, info.dimensions.depth);
+    const sameTris = eqNum(current.triangleEstimate, info.triangleEstimate);
     const sameMats =
       (current.extractedMaterials?.length ?? 0) === info.materials.length;
 

@@ -529,7 +529,9 @@ export const SystemsAndGraphsWorkbench: React.FC<SystemsAndGraphsWorkbenchProps>
       setLocaleDirty(false);
     } else if (localeFiles.length > 0) {
       const firstCode = localeFiles[0].name.replace(/\.json$/i, '');
-      setActiveLocale(firstCode);
+      if (firstCode && firstCode !== activeLocale) {
+        setActiveLocale(firstCode);
+      }
     } else {
       setLocaleDraft(
         collectExpectedLocalizationEntries(project, contents, activeLocale)

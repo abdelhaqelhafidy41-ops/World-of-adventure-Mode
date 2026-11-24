@@ -2523,6 +2523,85 @@ export function createSampleContentDatabase(
         },
         updatedAt: now,
       },
+      {
+        uid: 'sample_quest_echoes_of_the_spire',
+        id: `${modId}:echoes_of_the_spire`,
+        name: 'Echoes of the Spire',
+        description:
+          'Follow the calibrated waystone resonance to the upper spire archway and clear the sentinel vanguard.',
+        questType: 'main',
+        chapterOrRegion: 'Skyreach Highlands',
+        recommendedLevel: 14,
+        giverNpcId: `${modId}:warden_kael`,
+        repeatable: false,
+        objectives: [
+          {
+            id: 'obj_q2_reach',
+            type: 'reach_location',
+            summary: 'Survey the Upper Spire Archway',
+            targetId: `${modId}:skyreach_waystone_shrine`,
+            requiredCount: 1,
+            location: { x: 158, y: 131, z: -74, radius: 14 },
+          },
+          {
+            id: 'obj_q2_kill',
+            type: 'kill',
+            summary: 'Disable Spire Clockwork Sentinels',
+            targetId: `${modId}:clockwork_sentinel`,
+            requiredCount: 3,
+          },
+          {
+            id: 'obj_q2_talk',
+            type: 'talk',
+            summary: 'Report to Warden Kael',
+            targetId: `${modId}:warden_kael`,
+            requiredCount: 1,
+          },
+        ],
+        rewards: {
+          xp: 1650,
+          gold: 420,
+          reputationFaction: 'woa:factions/skyreach_wardens',
+          reputationAmount: 150,
+          items: [
+            {
+              id: 'rew_q2_cuirass',
+              itemId: `${modId}:skyguard_cuirass`,
+              quantity: 1,
+            },
+            {
+              id: 'rew_q2_tonic',
+              itemId: `${modId}:sky_tonic`,
+              quantity: 2,
+            },
+          ],
+        },
+        dialogue: [
+          {
+            id: 'q2dlg_1',
+            stage: 'offer',
+            speakerNpcId: `${modId}:warden_kael`,
+            text: 'The calibrated beacon points toward a second resonance echo near the upper spire. Pack Skyreach Tonics and scout ahead.',
+          },
+          {
+            id: 'q2dlg_2',
+            stage: 'in_progress',
+            speakerNpcId: `${modId}:warden_kael`,
+            text: 'Watch the shattered archway—heavy Clockwork Sentinels still patrol that ridge.',
+          },
+          {
+            id: 'q2dlg_3',
+            stage: 'complete',
+            speakerNpcId: `${modId}:warden_kael`,
+            text: 'The spire echoes have settled. Take this Skyguard Cuirass for the high-altitude trails ahead.',
+          },
+        ],
+        chain: {
+          prerequisiteQuestIds: [`${modId}:skyreach_calibration`],
+          nextQuestId: '',
+        },
+        updatedAt: now,
+      },
     ],
     recipes: [
       {
@@ -2542,7 +2621,7 @@ export function createSampleContentDatabase(
           },
           {
             id: 'ing_flask',
-            itemId: 'woa:items/glass_vial',
+            itemId: 'woa:glass_vial',
             quantity: 2,
           },
         ],

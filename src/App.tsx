@@ -538,13 +538,16 @@ export default function App() {
     });
   };
 
-  const handleSelectAsset = (assetId: string) => {
-    if (!activeProject) return;
-    persistProjectUpdate(
-      { ...activeProject, activeAssetId: assetId },
-      { recordUndo: false }
-    );
-  };
+  const handleSelectAsset = useCallback(
+    (assetId: string) => {
+      if (!activeProject || activeProject.activeAssetId === assetId) return;
+      persistProjectUpdate(
+        { ...activeProject, activeAssetId: assetId },
+        { recordUndo: false }
+      );
+    },
+    [activeProject, persistProjectUpdate]
+  );
 
   const handleUpdateAsset = (assetId: string, patch: Partial<ModAsset>) => {
     if (!activeProject) return;
@@ -1202,6 +1205,14 @@ export default function App() {
     setActiveView('workspace');
   };
 
+  const handleBeforeBuildBackup = useCallback(async () => {
+    if (!activeProject) return;
+    await handleCreateBackup(
+      `Pre-build v${activeProject.manifest.version}`,
+      'pre-build'
+    );
+  }, [activeProject, handleCreateBackup]);
+
   useBackNavigation(() => {
     if (createOpen) {
       setCreateOpen(false);
@@ -1292,13 +1303,7 @@ export default function App() {
           lastBuild={lastBuild}
           buildHistory={buildHistory}
           onBeforeBuildBackup={
-            settings.autoBackupOnBuild
-              ? () =>
-                  handleCreateBackup(
-                    `Pre-build v${activeProject.manifest.version}`,
-                    'pre-build'
-                  )
-              : undefined
+            settings.autoBackupOnBuild ? handleBeforeBuildBackup : undefined
           }
           onBuildComplete={handleRecordBuildComplete}
           onInspectIssue={handleInspectIssueFromBuild}

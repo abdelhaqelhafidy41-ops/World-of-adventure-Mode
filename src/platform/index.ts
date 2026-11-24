@@ -37,7 +37,20 @@ export function usePlatform(): PlatformInfo {
   const [info, setInfo] = useState<PlatformInfo>(() => getPlatformInfo());
 
   useEffect(() => {
-    const update = () => setInfo(getPlatformInfo());
+    const update = () => {
+      const next = getPlatformInfo();
+      setInfo((prev) =>
+        prev.platform === next.platform &&
+        prev.formFactor === next.formFactor &&
+        prev.viewportWidth === next.viewportWidth &&
+        prev.viewportHeight === next.viewportHeight &&
+        prev.isPortrait === next.isPortrait &&
+        prev.isTouchPrimary === next.isTouchPrimary &&
+        prev.hasNativeFilesystem === next.hasNativeFilesystem
+          ? prev
+          : next
+      );
+    };
     update();
     window.addEventListener('resize', update);
     window.addEventListener('orientationchange', update);

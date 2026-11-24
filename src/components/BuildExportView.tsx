@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Archive,
@@ -83,6 +83,15 @@ export const BuildExportView: React.FC<BuildExportViewProps> = ({
     useState<BuildReport | null>(null);
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
 
+  const onBeforeBuildBackupRef = useRef(onBeforeBuildBackup);
+  const onBuildCompleteRef = useRef(onBuildComplete);
+  const onLogRef = useRef(onLog);
+  const tRef = useRef(t);
+  onBeforeBuildBackupRef.current = onBeforeBuildBackup;
+  onBuildCompleteRef.current = onBuildComplete;
+  onLogRef.current = onLog;
+  tRef.current = t;
+
   const compatInfo = buildModCompatibilityInfo(project.manifest, target);
 
   const targetFilename = formatWoamodFilename(
@@ -95,18 +104,18 @@ export const BuildExportView: React.FC<BuildExportViewProps> = ({
       void language;
       setIsBuilding(true);
       try {
-        if (emitLog && onBeforeBuildBackup) {
-          await onBeforeBuildBackup();
+        if (emitLog && onBeforeBuildBackupRef.current) {
+          await onBeforeBuildBackupRef.current();
         }
         const report = await buildModProjectAsync(project, target, allProjects);
-        onBuildComplete(report, emitLog);
+        onBuildCompleteRef.current(report, emitLog);
         const val = report.validationReport;
         if (emitLog) {
           if (report.buildStatus === 'passed') {
-            onLog(
+            onLogRef.current(
               'success',
               'Builder',
-              t('app.logBuiltPassed', {
+              tRef.current('app.logBuiltPassed', {
                 filename: report.packageFileName,
                 size: formatByteSize(report.packagedBytes),
                 assets: report.assetCount,
@@ -115,20 +124,20 @@ export const BuildExportView: React.FC<BuildExportViewProps> = ({
               })
             );
           } else if (report.buildStatus === 'passed_with_warnings') {
-            onLog(
+            onLogRef.current(
               'warn',
               'Builder',
-              t('app.logBuiltWarnings', {
+              tRef.current('app.logBuiltWarnings', {
                 filename: report.packageFileName,
                 size: formatByteSize(report.packagedBytes),
                 count: report.warnings.length,
               })
             );
           } else {
-            onLog(
+            onLogRef.current(
               'error',
               'Builder',
-              t('app.logBuiltBlocked', {
+              tRef.current('app.logBuiltBlocked', {
                 filename: report.packageFileName,
                 count: val?.errorCount ?? 0,
               })
@@ -140,7 +149,7 @@ export const BuildExportView: React.FC<BuildExportViewProps> = ({
         setIsBuilding(false);
       }
     },
-    [project, target, allProjects, onBeforeBuildBackup, onBuildComplete, onLog, language, t]
+    [project, target, allProjects, language]
   );
 
   useEffect(() => {

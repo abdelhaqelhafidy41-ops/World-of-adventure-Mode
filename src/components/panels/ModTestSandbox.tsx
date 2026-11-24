@@ -201,7 +201,7 @@ export const ModTestSandbox: React.FC<ModTestSandboxProps> = ({
       if (!stillValid) {
         setSelectedEntityId(entityChoices[0].id);
       }
-    } else {
+    } else if (selectedEntityId !== '') {
       setSelectedEntityId('');
     }
   }, [entityChoices, selectedEntityId]);

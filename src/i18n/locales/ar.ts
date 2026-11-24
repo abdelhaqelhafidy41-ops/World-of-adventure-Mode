@@ -1249,7 +1249,7 @@ export const ar: TranslationDictionary = {
   'build.stepFailed': 'فشل',
   'build.stepSkipped': 'تم التخطي',
   'build.noContentsBlocked': 'لم يتم إنشاء ملفات الحزمة لأن أخطاء التحقق الحرجة أوقفت البناء.',
-  'build.verifiedLayoutNote': 'تخطيط أرشيف موثّق داخل {{filename}} (مع الحفاظ على assets/models و assets/textures و assets/sounds و data و localization و scripts):',
+  'build.verifiedLayoutNote': 'تخطيط أرشيف موثّق داخل {{filename}} (مع الحفاظ على assets/models و assets/textures و assets/sounds و data و localization):',
   'build.noPrunedFiles': 'لم يتم استبعاد أي ملفات تطويرية أو غير مدعومة أو غير مستخدمة في هذا البناء.',
   'build.validationReportTitle': 'تقرير التحقق من التعديل',
   'build.downloadManifestOnly': 'تنزيل mod.manifest.json',

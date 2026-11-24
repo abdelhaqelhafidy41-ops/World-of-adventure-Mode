@@ -1247,7 +1247,7 @@ export const en = {
   'build.stepFailed': 'Failed',
   'build.stepSkipped': 'Skipped',
   'build.noContentsBlocked': 'No package files were generated because critical validation errors stopped the build.',
-  'build.verifiedLayoutNote': 'Verified archive layout inside {{filename}} (preserving assets/models, assets/textures, assets/sounds, data, localization, and scripts):',
+  'build.verifiedLayoutNote': 'Verified archive layout inside {{filename}} (preserving assets/models, assets/textures, assets/sounds, data, and localization):',
   'build.noPrunedFiles': 'No development-only, unsupported, or unreferenced files were excluded from this build.',
   'build.validationReportTitle': 'Mod Validation Report',
   'build.downloadManifestOnly': 'Download mod.manifest.json',

@@ -458,7 +458,10 @@ export const ModTestSandbox: React.FC<ModTestSandboxProps> = ({
       onLogRef.current('error', 'Runtime Sandbox', msg);
     };
 
-    if (!snap.entryScriptContent.includes('onModLoad')) {
+    if (
+      snap.entryScriptContent.trim() &&
+      !snap.entryScriptContent.includes('onModLoad')
+    ) {
       reportErr(
         tRef.current('sandbox.errMissingHook', { file: snap.manifest.entryPoint })
       );

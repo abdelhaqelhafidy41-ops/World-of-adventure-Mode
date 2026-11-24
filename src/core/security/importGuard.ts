@@ -15,12 +15,20 @@ export const BLOCKED_EXECUTABLE_EXTENSIONS = new Set([
   'dylib',
   'apk',
   'aab',
+  'xapk',
+  'ipa',
   'msi',
+  'dmg',
+  'pkg',
   'bat',
   'cmd',
   'ps1',
   'vbs',
   'vbe',
+  'jse',
+  'hta',
+  'wsf',
+  'wsh',
   'sh',
   'bash',
   'zsh',
@@ -30,8 +38,12 @@ export const BLOCKED_EXECUTABLE_EXTENSIONS = new Set([
   'com',
   'scr',
   'pif',
+  'cpl',
+  'ocx',
   'sys',
   'drv',
+  'ko',
+  'efi',
   'elf',
   'appimage',
   'deb',
@@ -42,12 +54,49 @@ export const BLOCKED_EXECUTABLE_EXTENSIONS = new Set([
   'mjs',
 ]);
 
-export const SAFE_ARCHIVE_EXTENSIONS = new Set([
-  'json',
+export const BLOCKED_SOURCE_CODE_EXTENSIONS = new Set([
   'ts',
+  'tsx',
+  'mts',
+  'cts',
   'js',
-  'md',
-  'txt',
+  'jsx',
+  'mjs',
+  'cjs',
+  'py',
+  'pyc',
+  'pyo',
+  'rb',
+  'php',
+  'lua',
+  'pl',
+  'java',
+  'kt',
+  'cs',
+  'cpp',
+  'c',
+  'h',
+  'hpp',
+  'rs',
+  'go',
+  'swift',
+  'dart',
+  'asm',
+  'sh',
+  'bash',
+  'zsh',
+  'bat',
+  'cmd',
+  'ps1',
+  'vbs',
+  'vbe',
+  'hta',
+  'wsf',
+  'wsh',
+  'jse',
+]);
+
+export const WOAMOD_ALLOWED_ASSET_EXTENSIONS = new Set([
   'glb',
   'gltf',
   'obj',
@@ -58,6 +107,18 @@ export const SAFE_ARCHIVE_EXTENSIONS = new Set([
   'ogg',
   'mp3',
   'woa3d',
+]);
+
+export const SAFE_ARCHIVE_EXTENSIONS = new Set([
+  'json',
+  ...WOAMOD_ALLOWED_ASSET_EXTENSIONS,
+]);
+
+const WOAMOD_ALLOWED_ROOT_FILES = new Set([
+  'mod.json',
+  'mod.manifest.json',
+  'compatibility.json',
+  'build-metadata.json',
 ]);
 
 const RESERVED_WINDOWS_SEGMENTS = new Set([
@@ -96,6 +157,44 @@ export function getExtensionLower(fileName: string): string {
 export function isBlockedExecutableFile(filePath: string): boolean {
   const ext = getExtensionLower(filePath);
   return ext !== '' && BLOCKED_EXECUTABLE_EXTENSIONS.has(ext);
+}
+
+export function isDisallowedModPackageFile(filePath: string): boolean {
+  const ext = getExtensionLower(filePath);
+  if (!ext) return false;
+  return BLOCKED_EXECUTABLE_EXTENSIONS.has(ext) || BLOCKED_SOURCE_CODE_EXTENSIONS.has(ext);
+}
+
+export function isAllowedWoamodPackagePath(rawPath: string): boolean {
+  const clean = rawPath.replace(/\/+$/, '');
+  if (getArchivePathViolation(clean) !== null) return false;
+  if (isDisallowedModPackageFile(clean)) return false;
+
+  const lower = clean.toLowerCase();
+  const ext = getExtensionLower(lower);
+
+  if (!lower.includes('/')) {
+    return WOAMOD_ALLOWED_ROOT_FILES.has(lower);
+  }
+
+  if (lower.startsWith('data/')) {
+    return ext === 'json';
+  }
+
+  if (lower.startsWith('localization/')) {
+    return ext === 'json';
+  }
+
+  if (
+    lower.startsWith('assets/models/') ||
+    lower.startsWith('assets/textures/') ||
+    lower.startsWith('assets/sounds/') ||
+    lower.startsWith('assets/audio/')
+  ) {
+    return ext !== '' && WOAMOD_ALLOWED_ASSET_EXTENSIONS.has(ext);
+  }
+
+  return false;
 }
 
 /**
@@ -267,6 +366,38 @@ export function validateZipArchiveLimits(
   };
 }
 
+/**
+ * Enforces strict data-driven .woamod package security:
+ * - Inherits all zip-bomb, size, path-traversal, and reserved-name limits
+ * - Rejects executables, native/original libraries, and source-code/script files (.ts, .js, .exe, .dll, etc.)
+ * - Rejects any file outside the allowed data-driven mod package boundary
+ */
+export function assertSafeWoamodPackageLimits(
+  zip: JSZip,
+  compressedArchiveBytes?: number
+): { entryCount: number; declaredUncompressedBytes: number } {
+  const limits = validateZipArchiveLimits(zip, compressedArchiveBytes);
+
+  for (const entry of Object.values(zip.files)) {
+    const clean = entry.name.replace(/\/+$/, '');
+    if (!clean || entry.dir) continue;
+
+    if (isDisallowedModPackageFile(clean)) {
+      throw new Error(
+        `Security violation detected. Executable files or original libraries are not allowed inside mods. (${clean})`
+      );
+    }
+
+    if (!isAllowedWoamodPackagePath(clean)) {
+      throw new Error(
+        `Security violation detected. Disallowed file "${clean}" is outside the data-driven .woamod package boundary.`
+      );
+    }
+  }
+
+  return limits;
+}
+
 export async function readZipEntryTextBounded(
   entry: JSZip.JSZipObject,
   maxBytes: number = MAX_ARCHIVE_ENTRY_BYTES
@@ -286,7 +417,7 @@ export async function readZipEntryBufferBounded(
 }
 
 export function assertSafeLocalAssetSize(fileName: string, sizeBytes: number): void {
-  if (isBlockedExecutableFile(fileName)) {
+  if (isBlockedExecutableFile(fileName) || isDisallowedModPackageFile(fileName)) {
     throw new Error(`Blocked executable/unsafe file type: "${fileName}".`);
   }
   assertSafeFileSize(sizeBytes, MAX_LOCAL_ASSET_BYTES, `Asset "${fileName}"`);

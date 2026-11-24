@@ -10,14 +10,24 @@ import {
   MAX_ARCHIVE_UNCOMPRESSED_BYTES,
   assertSafeArchiveEntryPath,
   assertSafeLocalAssetSize,
+  assertSafeWoamodPackageLimits,
   getArchivePathViolation,
+  isAllowedWoamodPackagePath,
   isBlockedExecutableFile,
+  isDisallowedModPackageFile,
   safeJsonParse,
   sanitizeManifestEntryPoint,
   sanitizeSafeModId,
   stripPrototypePollution,
   validateZipArchiveLimits,
 } from '../src/core/security/importGuard';
+import { createStarterSampleProject } from '../src/core/project/modScaffolder';
+import {
+  exportModArchiveBlob,
+  importModFromFile,
+  isDevelopmentOnlyPath,
+} from '../src/core/builder/modBuilder';
+import { validateModProject } from '../src/core/validation/modValidator';
 import {
   detectFormFactor,
   detectRuntimePlatform,
@@ -207,4 +217,129 @@ test('English and Arabic i18n dictionaries stay strictly aligned', () => {
   const enKeys = Object.keys(en).sort();
   const arKeys = Object.keys(ar).sort();
   assert.deepEqual(arKeys, enKeys);
+});
+
+test('data-driven .woamod package boundary blocks scripts, source code, dev configs, and executables', () => {
+  assert.equal(isAllowedWoamodPackagePath('mod.json'), true);
+  assert.equal(isAllowedWoamodPackagePath('compatibility.json'), true);
+  assert.equal(isAllowedWoamodPackagePath('data/items.json'), true);
+  assert.equal(isAllowedWoamodPackagePath('localization/ar.json'), true);
+  assert.equal(isAllowedWoamodPackagePath('assets/models/relic_sword.woa3d'), true);
+  assert.equal(isAllowedWoamodPackagePath('assets/textures/albedo.png'), true);
+  assert.equal(isAllowedWoamodPackagePath('assets/sounds/chime.wav'), true);
+
+  for (const disallowed of [
+    'scripts/main.ts',
+    'scripts/helper.js',
+    'src/App.tsx',
+    'electron/main.cjs',
+    'package.json',
+    'vite.config.ts',
+    'README.md',
+    'payload.exe',
+    'lib.dll',
+    'run.sh',
+  ]) {
+    assert.equal(isAllowedWoamodPackagePath(disallowed), false, `Expected ${disallowed} to be disallowed in .woamod`);
+    assert.equal(isDevelopmentOnlyPath(disallowed), true, `Expected ${disallowed} to be pruned as dev/source file`);
+  }
+
+  assert.equal(isDisallowedModPackageFile('scripts/main.ts'), true);
+  assert.equal(isDisallowedModPackageFile('evil.js'), true);
+  assert.equal(isDisallowedModPackageFile('payload.exe'), true);
+  assert.equal(isDisallowedModPackageFile('data/items.json'), false);
+});
+
+test('exportModArchiveBlob generates a clean data-driven .woamod free of scripts/dev files and round-trips through importModFromFile', async () => {
+  const sample = createStarterSampleProject();
+  // Inject extra development/source files into workspace to prove general boundary pruning
+  sample.files.push(
+    {
+      id: 'file_dev_pkg',
+      name: 'package.json',
+      path: 'package.json',
+      parentPath: null,
+      type: 'data',
+      content: '{"name":"dev"}',
+      updatedAt: new Date().toISOString(),
+    },
+    {
+      id: 'file_dev_vite',
+      name: 'vite.config.ts',
+      path: 'vite.config.ts',
+      parentPath: null,
+      type: 'script',
+      content: 'export default {};',
+      updatedAt: new Date().toISOString(),
+    }
+  );
+
+  const { blob, filename, report } = await exportModArchiveBlob(sample, 'universal', {
+    confirmWarnings: true,
+  });
+  assert.equal(filename, 'Skyreach-Relics.woamod');
+  assert.equal(report.success, true);
+
+  const zip = await JSZip.loadAsync(await blob.arrayBuffer());
+  const allEntries = Object.keys(zip.files);
+  const fileEntries = Object.values(zip.files)
+    .filter((entry) => !entry.dir)
+    .map((entry) => entry.name);
+
+  assert.ok(fileEntries.includes('mod.json'));
+  assert.ok(fileEntries.includes('compatibility.json'));
+  assert.ok(fileEntries.includes('data/registry.json'));
+  assert.ok(fileEntries.includes('data/recipes.json'));
+  assert.ok(fileEntries.includes('data/quests.json'));
+  assert.ok(fileEntries.includes('localization/en.json'));
+
+  for (const entryName of allEntries) {
+    assert.equal(entryName.startsWith('scripts'), false, `Unexpected scripts entry in .woamod: ${entryName}`);
+  }
+  for (const filePath of fileEntries) {
+    assert.equal(isDisallowedModPackageFile(filePath), false, `Disallowed file in .woamod: ${filePath}`);
+    assert.equal(isAllowedWoamodPackagePath(filePath), true, `Out-of-boundary file in .woamod: ${filePath}`);
+  }
+
+  const modJson = JSON.parse(await zip.file('mod.json')!.async('string')) as Record<string, unknown>;
+  assert.equal(modJson.entryPoint, undefined);
+  assert.equal((modJson.directories as Record<string, unknown>).scripts, undefined);
+  assert.equal((modJson.compatibility as Record<string, unknown>).executionModel, 'data-driven');
+  assert.equal((modJson.compatibility as Record<string, unknown>).requiresNativeCode, false);
+
+  assert.doesNotThrow(() => assertSafeWoamodPackageLimits(zip, blob.size));
+
+  const exportedFile = new File([blob], filename, { type: 'application/octet-stream' });
+  const importedProject = await importModFromFile(exportedFile);
+  assert.equal(importedProject.manifest.modId, 'com.adventureforge.skyreach_relics');
+
+  const postImportValidation = await validateModProject(importedProject, [importedProject], 'universal');
+  assert.equal(postImportValidation.errorCount, 0, JSON.stringify(postImportValidation.issues));
+});
+
+test('importModFromFile rejects .woamod archives containing scripts/main.ts, arbitrary JS/TS, executables, or disguised workspace bundles', async () => {
+  const maliciousPayloads = [
+    { path: 'scripts/main.ts', content: 'console.log("hi")' },
+    { path: 'evil.js', content: 'alert(1)' },
+    { path: 'payload.exe', content: 'MZ' },
+    { path: 'native/lib.dll', content: 'MZ' },
+    { path: 'run.sh', content: '#!/bin/sh\nid' },
+  ];
+
+  for (const payload of maliciousPayloads) {
+    const badZip = new JSZip();
+    badZip.file('mod.json', JSON.stringify({ modId: 'com.test.bad', name: 'Bad Mod', version: '1.0.0' }));
+    badZip.file(payload.path, payload.content);
+    const badBlob = await badZip.generateAsync({ type: 'blob' });
+    const badFile = new File([badBlob], 'malicious.woamod', { type: 'application/octet-stream' });
+    await assert.rejects(() => importModFromFile(badFile), /Security violation|Blocked/i);
+  }
+
+  // Disguised .woamod containing woa-project.json + scripts/main.ts must still be blocked
+  const disguisedZip = new JSZip();
+  disguisedZip.file('woa-project.json', JSON.stringify({ project: { manifest: { modId: 'com.test.disguised' }, assets: [] } }));
+  disguisedZip.file('scripts/main.ts', 'export function onModLoad() {}');
+  const disguisedBlob = await disguisedZip.generateAsync({ type: 'blob' });
+  const disguisedFile = new File([disguisedBlob], 'disguised.woamod', { type: 'application/octet-stream' });
+  await assert.rejects(() => importModFromFile(disguisedFile), /Security violation|Blocked/i);
 });

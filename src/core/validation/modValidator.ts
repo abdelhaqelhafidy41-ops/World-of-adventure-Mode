@@ -664,15 +664,21 @@ export async function validateModProject(
     });
   }
 
+  const hasDataDrivenRegistry = files.some(
+    (f) => f.path === 'data/registry.json' && f.type !== 'folder'
+  );
+
   if (!manifest.entryPoint?.trim()) {
-    pushIssue('error', 'MISSING_ENTRY_POINT', 'manifest', {
-      file: activeManifestFile,
-      object: manifest.name || t('validator.obj.manifest'),
-      property: 'entryPoint',
-      problem: t('validator.missingEntryPointProblem'),
-      suggestion: t('validator.missingEntryPointSuggestion'),
-      targetType: 'manifest',
-    });
+    if (!hasDataDrivenRegistry) {
+      pushIssue('error', 'MISSING_ENTRY_POINT', 'manifest', {
+        file: activeManifestFile,
+        object: manifest.name || t('validator.obj.manifest'),
+        property: 'entryPoint',
+        problem: t('validator.missingEntryPointProblem'),
+        suggestion: t('validator.missingEntryPointSuggestion'),
+        targetType: 'manifest',
+      });
+    }
   } else {
     const unsafeEntry = analyzeArchivePath(manifest.entryPoint);
     if (unsafeEntry) {
@@ -687,7 +693,10 @@ export async function validateModProject(
         suggestion: t('validator.unsafeEntryPointSuggestion'),
         targetType: 'manifest',
       });
-    } else if (!files.some((f) => f.path === manifest.entryPoint && f.type !== 'folder')) {
+    } else if (
+      !files.some((f) => f.path === manifest.entryPoint && f.type !== 'folder') &&
+      !(hasDataDrivenRegistry && manifest.entryPoint === 'scripts/main.ts')
+    ) {
       pushIssue('error', 'MISSING_ENTRY_SCRIPT', 'assets', {
         file: manifest.entryPoint,
         object: t('validator.obj.entryScript'),
@@ -746,7 +755,7 @@ export async function validateModProject(
           object: file.name,
           property: 'extension',
           problem: `Blocked executable or unsafe binary extension in "${file.path}".`,
-          suggestion: 'Remove executable binaries; mods support JSON, TS/JS scripts, 3D models, textures, and audio only.',
+          suggestion: 'Remove executable binaries; .woamod packages support data-driven JSON registries, 3D models, textures, and audio only.',
           targetType: 'file',
           targetRef: file.path,
         });

@@ -45,6 +45,9 @@ import {
 import {
   assertSafeArchiveEntryPath,
   assertSafeFileSize,
+  assertSafeWoamodPackageLimits,
+  isAllowedWoamodPackagePath,
+  isDisallowedModPackageFile,
   MAX_ARCHIVE_BYTES,
   MAX_JSON_IMPORT_BYTES,
   readZipEntryBufferBounded,
@@ -103,7 +106,6 @@ const REQUIRED_ARCHIVE_DIRECTORIES = [
   'assets/sounds',
   'data',
   'localization',
-  'scripts',
 ];
 
 export function formatWoamodFilename(modName: string, modId: string): string {
@@ -121,16 +123,24 @@ export function formatWoamodFilename(modName: string, modId: string): string {
 }
 
 export function isDevelopmentOnlyPath(rawPath: string): boolean {
-  const lower = rawPath.toLowerCase();
+  const normalized = rawPath.replace(/\\/g, '/').replace(/^\/+/, '');
+  const lower = normalized.toLowerCase();
   const baseName = lower.split('/').pop() ?? lower;
 
   if (
     lower === 'mod.manifest.json' ||
     lower === 'build-metadata.json' ||
+    lower === 'woa-project.json' ||
     lower === 'package.json' ||
     lower === 'package-lock.json' ||
-    lower === 'tsconfig.json' ||
-    lower === 'vite.config.ts'
+    lower === 'bun.lock' ||
+    lower === 'yarn.lock' ||
+    lower === 'pnpm-lock.yaml' ||
+    lower === 'index.html' ||
+    lower === 'metadata.json' ||
+    lower === 'version.json' ||
+    /^tsconfig(\.[^/]+)?\.json$/i.test(baseName) ||
+    /^(vite|vitest|eslint|prettier|capacitor|electron-builder)\.config\.[^/]+$/i.test(baseName)
   ) {
     return true;
   }
@@ -140,32 +150,61 @@ export function isDevelopmentOnlyPath(rawPath: string): boolean {
     baseName === 'desktop.ini' ||
     baseName === '.gitignore' ||
     baseName === '.gitattributes' ||
-    baseName.startsWith('.env')
+    baseName === '.npmignore' ||
+    baseName.startsWith('.env') ||
+    baseName.startsWith('.eslint') ||
+    baseName.startsWith('.prettier')
   ) {
     return true;
   }
   if (
+    lower.startsWith('scripts/') ||
+    lower.startsWith('src/') ||
+    lower.startsWith('app/') ||
+    lower.startsWith('electron/') ||
+    lower.startsWith('android/') ||
+    lower.startsWith('ios/') ||
+    lower.startsWith('build/') ||
+    lower.startsWith('dist/') ||
+    lower.startsWith('dev-dist/') ||
+    lower.startsWith('out/') ||
+    lower.startsWith('coverage/') ||
+    lower.startsWith('public/') ||
     lower.startsWith('docs/') ||
+    lower.startsWith('doc/') ||
     lower.startsWith('test/') ||
     lower.startsWith('tests/') ||
     lower.startsWith('__tests__/') ||
-    lower.startsWith('.vscode/') ||
+    lower.startsWith('node_modules/') ||
+    lower.startsWith('.git/') ||
     lower.startsWith('.github/') ||
-    lower.startsWith('node_modules/')
+    lower.startsWith('.vscode/') ||
+    lower.startsWith('.idea/') ||
+    lower.startsWith('.husky/') ||
+    lower.startsWith('.aistudio/') ||
+    lower.startsWith('.woa-blobs/')
   ) {
+    return true;
+  }
+  if (isDisallowedModPackageFile(lower)) {
     return true;
   }
   if (
     baseName.endsWith('.md') ||
     baseName.endsWith('.markdown') ||
+    baseName.endsWith('.txt') ||
+    baseName.endsWith('.html') ||
+    baseName.endsWith('.htm') ||
+    baseName.endsWith('.css') ||
+    baseName.endsWith('.scss') ||
+    baseName.endsWith('.sass') ||
+    baseName.endsWith('.less') ||
     baseName.endsWith('.bak') ||
     baseName.endsWith('.tmp') ||
     baseName.endsWith('.log') ||
-    baseName.endsWith('.map')
+    baseName.endsWith('.map') ||
+    baseName.endsWith('.lock')
   ) {
-    return true;
-  }
-  if (baseName.endsWith('.txt') && !lower.startsWith('localization/')) {
     return true;
   }
   return false;
@@ -592,7 +631,6 @@ function buildRuntimeModJson(
       minGameVersion: compatibility.minGameVersion,
       maxGameVersion: compatibility.maxGameVersion,
       categories: manifest.categories,
-      entryPoint: manifest.entryPoint,
       targetPlatforms: manifest.targetPlatforms,
       buildTarget: targetPlatform,
       dependencies: manifest.dependencies ?? [],
@@ -609,7 +647,6 @@ function buildRuntimeModJson(
         sounds: 'assets/sounds',
         data: 'data',
         localization: 'localization',
-        scripts: 'scripts',
       },
       registries: {
         items: 'data/items.json',
@@ -873,12 +910,23 @@ async function runBuildPipeline(
       continue;
     }
 
-    if (file.path.startsWith('localization/') && file.path.endsWith('.json')) {
-      localizationFiles.push(file.path);
+    if (
+      (file.path.startsWith('data/') || file.path.startsWith('localization/')) &&
+      file.path.toLowerCase().endsWith('.json') &&
+      isAllowedWoamodPackagePath(file.path)
+    ) {
+      if (file.path.startsWith('localization/')) {
+        localizationFiles.push(file.path);
+      }
+      zipEntries.set(file.path, rewriteAudioRefsToSounds(file.content ?? ''));
+      continue;
     }
 
-    // Runtime scripts, custom data JSONs, or extra localization files
-    zipEntries.set(file.path, rewriteAudioRefsToSounds(file.content ?? ''));
+    // Anything outside the verified data-driven .woamod package boundary is excluded
+    prunedFiles.push({
+      path: file.path,
+      reason: isDisallowedModPackageFile(file.path) ? 'dev-only' : 'unsupported-format',
+    });
   }
 
   // Generate standardized runtime data & localization files
@@ -1085,6 +1133,14 @@ async function runBuildPipeline(
         code: 'INTERNAL_PATH_INVALID',
         path: entryPath,
         message: pathErr,
+      });
+    } else if (isDisallowedModPackageFile(entryPath) || !isAllowedWoamodPackagePath(entryPath)) {
+      internalPathErrors++;
+      diagnostics.push({
+        level: 'error',
+        code: 'INTERNAL_PATH_INVALID',
+        path: entryPath,
+        message: `Disallowed file "${entryPath}" cannot be packaged inside a data-driven .woamod archive.`,
       });
     }
     const lower = entryPath.toLowerCase();
@@ -1458,10 +1514,10 @@ export async function importModFromFile(file: File): Promise<ModProject> {
   // .woaproj.zip / .woamod / .zip archive
   assertSafeFileSize(file.size, MAX_ARCHIVE_BYTES, `Mod archive "${file.name}"`);
   const zip = await JSZip.loadAsync(file);
-  validateZipArchiveLimits(zip, file.size);
-
-  const projectBundleEntry = zip.file('woa-project.json');
+  const isWoamodArchive = file.name.toLowerCase().endsWith('.woamod');
+  const projectBundleEntry = !isWoamodArchive ? zip.file('woa-project.json') : null;
   if (projectBundleEntry) {
+    validateZipArchiveLimits(zip, file.size);
     const bundleJson = await readZipEntryTextBounded(projectBundleEntry);
     const rawBundle = safeJsonParse<{
       project?: ModProject;
@@ -1498,6 +1554,9 @@ export async function importModFromFile(file: File): Promise<ModProject> {
     return syncContentFilesInProject(hydrated, resolveProjectContents(hydrated));
   }
 
+  // Runtime .woamod / standard mod archive: enforce strict data-driven package security
+  assertSafeWoamodPackageLimits(zip, file.size);
+
   const manifestEntry = zip.file('mod.manifest.json') ?? zip.file('mod.json');
   if (!manifestEntry) {
     throw new Error(t('builder.errArchiveMissingManifest'));
@@ -1507,8 +1566,14 @@ export async function importModFromFile(file: File): Promise<ModProject> {
   const rawManifest = safeJsonParse<
     ModManifest & {
       localized?: { name?: LocalizedTextMap; description?: LocalizedTextMap };
+      compatibility?: { requiresNativeCode?: boolean };
     }
   >(manifestRaw);
+  if (rawManifest.compatibility?.requiresNativeCode === true) {
+    throw new Error(
+      'Security violation detected. Native code execution is not permitted inside data-driven .woamod mods.'
+    );
+  }
   const safeModId = sanitizeSafeModId(rawManifest.modId);
   const mergedName = mergeLocalizedField(
     rawManifest.name,

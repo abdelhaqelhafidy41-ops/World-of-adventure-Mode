@@ -24,7 +24,41 @@ export interface StorageLocationInfo {
   mode: 'native-documents' | 'android-saf' | 'android-appdata' | 'browser-indexeddb';
   safTreeUri?: string | null;
   safTreeLabel?: string | null;
+  folderAccessValid?: boolean;
+  folderAccessRevoked?: boolean;
   subdirectories: Record<StorageSubdir, string>;
+}
+
+export interface StorageConfig {
+  safTreeUri: string | null;
+  safTreeLabel: string | null;
+  folderAccessValid: boolean;
+  folderAccessRevoked: boolean;
+  firstTimeSetupPrompted: boolean;
+  lastOpenedProjectId: string | null;
+  defaultExportMode: 'dedicated-folder' | 'ask-dialog';
+  exportConflictPolicy: 'ask' | 'rename';
+  autoBackupOnBuild: boolean;
+  updatedAt: string;
+}
+
+export interface DedicatedFolderEntry {
+  name: string;
+  relativePath: string;
+  isDirectory: boolean;
+  sizeBytes?: number;
+  lastModified?: string;
+  mimeType?: string;
+  uri?: string;
+}
+
+export interface StorageAccessCheckResult {
+  valid: boolean;
+  revoked: boolean;
+  mode: StorageLocationInfo['mode'];
+  rootPath: string;
+  safTreeUri?: string | null;
+  safTreeLabel?: string | null;
 }
 
 export interface PlatformCapabilities {
@@ -58,13 +92,20 @@ export interface SaveExportOptions {
   blob: Blob;
   mimeType?: string;
   promptSaveDialog?: boolean;
+  subdir?: StorageSubdir;
+  conflictResolution?: 'ask' | 'replace' | 'rename';
 }
 
 export interface SaveExportResult {
   saved: boolean;
   locationLabel: string;
   filePath?: string;
+  fileName?: string;
+  directoryLabel?: string;
   cancelled?: boolean;
+  conflict?: boolean;
+  existingName?: string;
+  suggestedName?: string;
 }
 
 export interface PickDirectoryResult {
@@ -82,13 +123,19 @@ export interface PlatformBridge {
   readonly platform: RuntimePlatform;
   getStorageInfo(): Promise<StorageLocationInfo>;
   ensureStorageDirectories(): Promise<StorageLocationInfo>;
+  checkStorageFolderAccess?(): Promise<StorageAccessCheckResult>;
+  ensureFirstTimeStorageSetup?(): Promise<boolean>;
   pickImportFiles(options?: PickFilesOptions): Promise<File[]>;
   pickStorageDirectory(): Promise<PickDirectoryResult | null>;
   saveExportFile(options: SaveExportOptions): Promise<SaveExportResult>;
+  exportFileExists?(fileName: string, subdir?: StorageSubdir): Promise<boolean>;
+  listSubdirEntries?(subdir: StorageSubdir, relativePath?: string): Promise<DedicatedFolderEntry[]>;
   openStorageFolder(subdir?: StorageSubdir): Promise<boolean>;
+  clearStorageDirectory?: () => Promise<void>;
 
   // Native persistence sync helpers (no-ops on pure Web where IndexedDB is authoritative)
   syncSaveProject(project: ModProject): Promise<void>;
+  syncRenameProject?(oldModId: string, project: ModProject): Promise<void>;
   syncDeleteProject(modId: string): Promise<void>;
   syncListProjects(): Promise<ModProject[] | null>;
   syncSaveAssetBlob(key: string, buffer: ArrayBuffer, mimeType: string): Promise<void>;
@@ -99,6 +146,8 @@ export interface PlatformBridge {
   syncDeleteBackup(backupId: string): Promise<void>;
   syncSaveSettings(settings: EditorSettings): Promise<void>;
   syncLoadSettings(): Promise<EditorSettings | null>;
+  syncSaveStorageConfig?(config: StorageConfig): Promise<void>;
+  syncLoadStorageConfig?(): Promise<StorageConfig | null>;
 }
 
 export interface WoaDesktopBridge {
@@ -109,6 +158,7 @@ export interface WoaDesktopBridge {
   openStorageFolder(subdir?: StorageSubdir): Promise<boolean>;
   listProjects(): Promise<ModProject[]>;
   writeProject(project: ModProject): Promise<void>;
+  renameProject?(oldModId: string, project: ModProject): Promise<void>;
   deleteProject(modId: string): Promise<void>;
   writeAssetBlob(key: string, data: Uint8Array, mimeType: string): Promise<void>;
   readAssetBlob(key: string): Promise<{ data: Uint8Array; mimeType: string } | null>;
@@ -118,11 +168,17 @@ export interface WoaDesktopBridge {
   deleteBackup(backupId: string): Promise<void>;
   writeSettings(settings: EditorSettings): Promise<void>;
   readSettings(): Promise<EditorSettings | null>;
+  writeStorageConfig?(config: StorageConfig): Promise<void>;
+  readStorageConfig?(): Promise<StorageConfig | null>;
+  exportFileExists?(fileName: string, subdir?: StorageSubdir): Promise<boolean>;
+  listSubdirEntries?(subdir: StorageSubdir, relativePath?: string): Promise<DedicatedFolderEntry[]>;
   saveExportFile(payload: {
     fileName: string;
     data: Uint8Array;
     promptDialog?: boolean;
-  }): Promise<{ saved: boolean; filePath?: string; cancelled?: boolean }>;
+    subdir?: StorageSubdir;
+    conflictResolution?: 'ask' | 'replace' | 'rename';
+  }): Promise<SaveExportResult>;
   openFilesDialog(options: {
     title?: string;
     extensions?: string[];

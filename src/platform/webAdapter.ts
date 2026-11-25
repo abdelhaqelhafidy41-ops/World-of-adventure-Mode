@@ -1,13 +1,21 @@
 import {
+  createDefaultStorageConfig,
+} from './androidAccessManager';
+import {
+  DedicatedFolderEntry,
   PickDirectoryResult,
   PickFilesOptions,
   PlatformBridge,
   SaveExportOptions,
   SaveExportResult,
   STORAGE_SUBDIRS,
+  StorageAccessCheckResult,
+  StorageConfig,
   StorageLocationInfo,
   StorageSubdir,
 } from './types';
+
+const LS_WEB_STORAGE_CONFIG_KEY = 'woa_web_storage_config_v1';
 
 function makeBrowserInputFilePicker(options?: PickFilesOptions): Promise<File[]> {
   return new Promise((resolve) => {
@@ -81,12 +89,27 @@ export class WebPlatformAdapter implements PlatformBridge {
       platform: 'web',
       rootPath: 'Browser IndexedDB (woa_mod_creator_db)',
       mode: 'browser-indexeddb',
+      folderAccessValid: true,
+      folderAccessRevoked: false,
       subdirectories,
     };
   }
 
   async ensureStorageDirectories(): Promise<StorageLocationInfo> {
     return this.getStorageInfo();
+  }
+
+  async checkStorageFolderAccess(): Promise<StorageAccessCheckResult> {
+    return {
+      valid: true,
+      revoked: false,
+      mode: 'browser-indexeddb',
+      rootPath: 'Browser IndexedDB (woa_mod_creator_db)',
+    };
+  }
+
+  async ensureFirstTimeStorageSetup(): Promise<boolean> {
+    return true;
   }
 
   async pickImportFiles(options?: PickFilesOptions): Promise<File[]> {
@@ -154,6 +177,8 @@ export class WebPlatformAdapter implements PlatformBridge {
           saved: true,
           locationLabel: fileName,
           filePath: fileName,
+          fileName,
+          directoryLabel: 'Selected Folder',
         };
       } catch (err) {
         if ((err as { name?: string })?.name === 'AbortError') {
@@ -168,7 +193,17 @@ export class WebPlatformAdapter implements PlatformBridge {
       saved: true,
       locationLabel: fileName,
       filePath: fileName,
+      fileName,
+      directoryLabel: 'Browser Downloads',
     };
+  }
+
+  async exportFileExists(): Promise<boolean> {
+    return false;
+  }
+
+  async listSubdirEntries(): Promise<DedicatedFolderEntry[]> {
+    return [];
   }
 
   async openStorageFolder(): Promise<boolean> {
@@ -176,6 +211,7 @@ export class WebPlatformAdapter implements PlatformBridge {
   }
 
   async syncSaveProject(): Promise<void> {}
+  async syncRenameProject(): Promise<void> {}
   async syncDeleteProject(): Promise<void> {}
   async syncListProjects() {
     return null;
@@ -192,6 +228,31 @@ export class WebPlatformAdapter implements PlatformBridge {
   async syncDeleteBackup(): Promise<void> {}
   async syncSaveSettings(): Promise<void> {}
   async syncLoadSettings() {
+    return null;
+  }
+  async syncSaveStorageConfig(config: StorageConfig): Promise<void> {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.setItem(LS_WEB_STORAGE_CONFIG_KEY, JSON.stringify(config));
+      }
+    } catch {
+      // ignore
+    }
+  }
+  async syncLoadStorageConfig(): Promise<StorageConfig | null> {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        const raw = window.localStorage.getItem(LS_WEB_STORAGE_CONFIG_KEY);
+        if (raw) {
+          return {
+            ...createDefaultStorageConfig(),
+            ...(JSON.parse(raw) as Partial<StorageConfig>),
+          };
+        }
+      }
+    } catch {
+      // ignore
+    }
     return null;
   }
 }

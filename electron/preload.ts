@@ -11,6 +11,8 @@ const bridge: WoaDesktopBridge = {
 
   listProjects: () => ipcRenderer.invoke('woa:list-projects'),
   writeProject: (project) => ipcRenderer.invoke('woa:write-project', project),
+  renameProject: (oldModId, project) =>
+    ipcRenderer.invoke('woa:rename-project', { oldModId, project }),
   deleteProject: (modId) => ipcRenderer.invoke('woa:delete-project', modId),
 
   writeAssetBlob: (key, data, mimeType) =>
@@ -24,6 +26,12 @@ const bridge: WoaDesktopBridge = {
 
   writeSettings: (settings) => ipcRenderer.invoke('woa:write-settings', settings),
   readSettings: () => ipcRenderer.invoke('woa:read-settings'),
+  writeStorageConfig: (config) => ipcRenderer.invoke('woa:write-storage-config', config),
+  readStorageConfig: () => ipcRenderer.invoke('woa:read-storage-config'),
+  exportFileExists: (fileName, subdir) =>
+    ipcRenderer.invoke('woa:export-file-exists', { fileName, subdir }),
+  listSubdirEntries: (subdir, relativePath) =>
+    ipcRenderer.invoke('woa:list-subdir-entries', { subdir, relativePath }),
 
   saveExportFile: (payload) => ipcRenderer.invoke('woa:save-export-file', payload),
   openFilesDialog: (options) => ipcRenderer.invoke('woa:open-files-dialog', options),

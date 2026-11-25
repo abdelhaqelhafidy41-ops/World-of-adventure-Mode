@@ -1,26 +1,45 @@
 import React, { useEffect, useState } from 'react';
 import {
+  AlertTriangle,
+  Archive,
+  CheckCircle2,
+  Folder,
   FolderOpen,
   Globe,
   HardDrive,
   Info,
   Keyboard,
   Monitor,
+  Package,
+  RefreshCw,
   RotateCcw,
+  Settings,
   Smartphone,
   Wifi,
   WifiOff,
+  X,
 } from 'lucide-react';
 import { SUPPORTED_GAME_VERSIONS } from '@/src/core/project/modScaffolder';
-import { DEFAULT_EDITOR_SETTINGS } from '@/src/core/storage/modRepository';
+import {
+  DEFAULT_EDITOR_SETTINGS,
+  saveStorageConfig,
+} from '@/src/core/storage/modRepository';
 import { APP_VERSION } from '@/src/core/version';
 import { useOnlineStatus } from '@/src/hooks/useOnlineStatus';
 import { usePWAInstall } from '@/src/hooks/usePWAInstall';
 import { useI18n } from '@/src/i18n';
 import {
+  AndroidAccessDeniedError,
+  type AndroidStorageAccessStatus,
+  type DedicatedFolderEntry,
   STORAGE_SUBDIRS,
   StorageLocationInfo,
+  StorageSubdir,
+  clearAndroidAccessIssue,
+  getAndroidAccessStatus,
   getPlatformAdapter,
+  openAndroidAppSettings,
+  reportAndroidAccessError,
   usePlatform,
 } from '@/src/platform';
 import { EditorSettings, TargetPlatform } from '@/src/types/mod';
@@ -43,29 +62,97 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const { isInstalled } = usePWAInstall();
   const platformInfo = usePlatform();
   const [storageInfo, setStorageInfo] = useState<StorageLocationInfo | null>(null);
+  const [androidStatus, setAndroidStatus] = useState<AndroidStorageAccessStatus | null>(null);
+  const [browseSubdir, setBrowseSubdir] = useState<StorageSubdir | null>(null);
+  const [browseEntries, setBrowseEntries] = useState<DedicatedFolderEntry[]>([]);
+  const [browseLoading, setBrowseLoading] = useState(false);
+
+  const refreshStorageState = async () => {
+    const adapter = getPlatformAdapter();
+    if (adapter.checkStorageFolderAccess) {
+      await adapter.checkStorageFolderAccess();
+    }
+    const [info, status] = await Promise.all([
+      adapter.getStorageInfo(),
+      platformInfo.platform === 'android'
+        ? getAndroidAccessStatus()
+        : Promise.resolve(null),
+    ]);
+    setStorageInfo(info);
+    setAndroidStatus(status);
+  };
 
   useEffect(() => {
     let active = true;
-    void getPlatformAdapter()
-      .getStorageInfo()
-      .then((info) => {
-        if (active) setStorageInfo(info);
-      });
+    void (async () => {
+      const adapter = getPlatformAdapter();
+      if (adapter.checkStorageFolderAccess) {
+        await adapter.checkStorageFolderAccess();
+      }
+      const [info, status] = await Promise.all([
+        adapter.getStorageInfo(),
+        platformInfo.platform === 'android'
+          ? getAndroidAccessStatus()
+          : Promise.resolve(null),
+      ]);
+      if (!active) return;
+      setStorageInfo(info);
+      setAndroidStatus(status);
+    })();
     return () => {
       active = false;
     };
   }, [platformInfo.platform]);
 
-  const handleOpenFolder = () => {
-    void getPlatformAdapter().openStorageFolder();
+  const handleOpenFolder = async (subdir?: StorageSubdir) => {
+    const adapter = getPlatformAdapter();
+    if (subdir && platformInfo.platform === 'android') {
+      setBrowseSubdir(subdir);
+      setBrowseLoading(true);
+      try {
+        const entries = (await adapter.listSubdirEntries?.(subdir)) ?? [];
+        setBrowseEntries(entries);
+      } finally {
+        setBrowseLoading(false);
+      }
+      return;
+    }
+    await adapter.openStorageFolder(subdir);
   };
 
   const handlePickSafDirectory = async () => {
-    const picked = await getPlatformAdapter().pickStorageDirectory();
-    if (picked) {
-      const updated = await getPlatformAdapter().getStorageInfo();
-      setStorageInfo(updated);
+    try {
+      const picked = await getPlatformAdapter().pickStorageDirectory();
+      if (picked) {
+        clearAndroidAccessIssue();
+        await saveStorageConfig({
+          safTreeUri: picked.uri,
+          safTreeLabel: picked.label,
+          folderAccessValid: true,
+          folderAccessRevoked: false,
+          firstTimeSetupPrompted: true,
+        });
+        await refreshStorageState();
+      }
+    } catch (err) {
+      if (err instanceof AndroidAccessDeniedError) {
+        reportAndroidAccessError(err.operation, err, {
+          permanentlyDenied: err.permanentlyDenied,
+          retryAction: () => void handlePickSafDirectory(),
+        });
+      }
     }
+  };
+
+  const handleClearSafDirectory = async () => {
+    await getPlatformAdapter().clearStorageDirectory?.();
+    await saveStorageConfig({
+      safTreeUri: null,
+      safTreeLabel: null,
+      folderAccessValid: false,
+      folderAccessRevoked: false,
+    });
+    await refreshStorageState();
   };
 
   const runtimeLabel =
@@ -83,6 +170,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         : storageInfo?.mode === 'android-appdata'
           ? t('settings.storageModeAppData')
           : t('settings.storageModeIndexedDb');
+
+  const isFolderRevoked = Boolean(storageInfo?.folderAccessRevoked);
+  const isFolderConnectedValid = Boolean(storageInfo?.folderAccessValid && !isFolderRevoked);
 
   const toggleItems = [
     {
@@ -149,11 +239,39 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
         {/* Platform & Storage */}
         <section className="space-y-3">
-          <div className="flex items-center gap-2">
-            <HardDrive className="w-4 h-4 text-blue-500" />
-            <h2 className="font-display text-sm font-semibold text-slate-900 dark:text-slate-100">
-              {t('settings.platformSection')}
-            </h2>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <HardDrive className="w-4 h-4 text-blue-500" />
+              <h2 className="font-display text-sm font-semibold text-slate-900 dark:text-slate-100">
+                {t('settings.platformSection')}
+              </h2>
+            </div>
+
+            {storageInfo && (
+              <span
+                className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium ${
+                  isFolderRevoked
+                    ? 'bg-red-500/15 text-red-700 dark:text-red-300'
+                    : isFolderConnectedValid
+                      ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                      : 'bg-slate-500/15 text-slate-700 dark:text-slate-300'
+                }`}
+              >
+                {isFolderRevoked ? (
+                  <>
+                    <AlertTriangle className="w-3 h-3 shrink-0" />
+                    {t('android.accessRevokedBadge')}
+                  </>
+                ) : isFolderConnectedValid ? (
+                  <>
+                    <CheckCircle2 className="w-3 h-3 shrink-0" />
+                    {t('android.accessValidBadge')}
+                  </>
+                ) : (
+                  t('android.appPrivateFallbackBadge')
+                )}
+              </span>
+            )}
           </div>
           <div className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-[#121823] p-4 space-y-4 text-xs">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -195,9 +313,42 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   {storageInfo.rootPath}
                 </div>
 
-                {storageInfo.safTreeLabel && (
+                {isFolderRevoked ? (
+                  <div className="p-3 rounded-md border border-amber-500/40 bg-amber-500/10 text-amber-900 dark:text-amber-200 space-y-1">
+                    <div className="font-semibold flex items-center gap-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                      {t('android.safRevokedMessage')}
+                    </div>
+                    <p className="text-[11px] opacity-90">{t('android.safRevokedExplain')}</p>
+                  </div>
+                ) : storageInfo.safTreeLabel ? (
                   <div className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
                     {t('settings.safActiveLabel', { label: storageInfo.safTreeLabel })}
+                  </div>
+                ) : (
+                  platformInfo.platform === 'android' && (
+                    <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                      {t('android.safNotPersisted')}
+                    </div>
+                  )
+                )}
+
+                {platformInfo.platform === 'android' && androidStatus && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600 dark:text-slate-400 pt-0.5">
+                    <span dir="ltr">
+                      {t('android.apiLevelLabel', {
+                        sdk: androidStatus.sdkInt,
+                        release: androidStatus.release || String(androidStatus.sdkInt),
+                        mode: androidStatus.usesScopedStorage
+                          ? t('android.storageModeModern')
+                          : t('android.storageModeLegacy'),
+                      })}
+                    </span>
+                    <span className="tabular-nums">
+                      {t('android.persistedFilesHint', {
+                        count: androidStatus.persistedFilesCount ?? 0,
+                      })}
+                    </span>
                   </div>
                 )}
 
@@ -224,7 +375,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               {platformInfo.platform === 'windows' && (
                 <button
                   type="button"
-                  onClick={handleOpenFolder}
+                  onClick={() => void handleOpenFolder()}
                   className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 dark:border-white/15 dark:bg-[#0B0F17] dark:text-slate-200 dark:hover:bg-white/5 transition-colors"
                 >
                   <FolderOpen className="w-3.5 h-3.5" />
@@ -233,17 +384,164 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               )}
 
               {platformInfo.hasStorageAccessFramework && (
-                <button
-                  type="button"
-                  onClick={() => void handlePickSafDirectory()}
-                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-500 transition-colors min-h-[40px]"
-                >
-                  <FolderOpen className="w-3.5 h-3.5" />
-                  {t('settings.chooseSafFolderBtn')}
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={() => void handlePickSafDirectory()}
+                    className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-md transition-colors min-h-[40px] ${
+                      isFolderRevoked
+                        ? 'bg-amber-600 text-white hover:bg-amber-500'
+                        : 'bg-blue-600 text-white hover:bg-blue-500'
+                    }`}
+                  >
+                    {isFolderRevoked ? (
+                      <RefreshCw className="w-3.5 h-3.5" />
+                    ) : (
+                      <FolderOpen className="w-3.5 h-3.5" />
+                    )}
+                    {isFolderRevoked
+                      ? t('android.reconnectFolderBtn')
+                      : storageInfo?.safTreeUri
+                        ? t('android.changeFolderBtn')
+                        : t('settings.chooseSafFolderBtn')}
+                  </button>
+
+                  {storageInfo?.safTreeUri && (
+                    <button
+                      type="button"
+                      onClick={() => void handleClearSafDirectory()}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 dark:border-white/15 dark:bg-[#0B0F17] dark:text-slate-200 dark:hover:bg-white/5 transition-colors min-h-[40px]"
+                    >
+                      {t('android.clearSafFolderBtn')}
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => void openAndroidAppSettings()}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 dark:border-white/15 dark:bg-[#0B0F17] dark:text-slate-200 dark:hover:bg-white/5 transition-colors min-h-[40px]"
+                  >
+                    <Settings className="w-3.5 h-3.5" />
+                    {t('android.openSettings')}
+                  </button>
+                </>
+              )}
+
+              {platformInfo.platform !== 'web' && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => void handleOpenFolder('Projects')}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 dark:border-white/15 dark:bg-[#0B0F17] dark:text-slate-200 dark:hover:bg-white/5 transition-colors min-h-[40px]"
+                  >
+                    <Folder className="w-3.5 h-3.5" />
+                    {t('android.openProjectsBtn')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleOpenFolder('Exports')}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 dark:border-white/15 dark:bg-[#0B0F17] dark:text-slate-200 dark:hover:bg-white/5 transition-colors min-h-[40px]"
+                  >
+                    <Package className="w-3.5 h-3.5" />
+                    {t('android.openExportsBtn')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleOpenFolder('Backups')}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 dark:border-white/15 dark:bg-[#0B0F17] dark:text-slate-200 dark:hover:bg-white/5 transition-colors min-h-[40px]"
+                  >
+                    <Archive className="w-3.5 h-3.5" />
+                    {t('android.openBackupsBtn')}
+                  </button>
+                </>
               )}
             </div>
           </div>
+
+          {browseSubdir && (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+              role="dialog"
+              aria-modal="true"
+            >
+              <div className="w-full max-w-lg rounded-lg border border-slate-200 bg-white dark:border-white/10 dark:bg-[#121823] overflow-hidden shadow-xl">
+                <div className="px-5 py-3.5 border-b border-slate-200 dark:border-white/10 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <FolderOpen className="w-4 h-4 text-blue-500 shrink-0" />
+                    <h3 dir="auto" className="font-display text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">
+                      {t('android.folderBrowserTitle', {
+                        folder: `World of Adventure Mod Creator/${browseSubdir}/`,
+                      })}
+                    </h3>
+                  </div>
+                  <button
+                    type="button"
+                    aria-label={t('common.close')}
+                    onClick={() => setBrowseSubdir(null)}
+                    className="p-1.5 rounded text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-white/10"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="max-h-72 overflow-y-auto p-4 text-xs">
+                  {browseLoading ? (
+                    <div className="py-8 text-center text-slate-500 dark:text-slate-400">
+                      {t('app.loading')}
+                    </div>
+                  ) : browseEntries.length === 0 ? (
+                    <div className="py-8 text-center text-slate-500 dark:text-slate-400">
+                      {t('android.folderEmpty')}
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-slate-200 dark:divide-white/10 border border-slate-200 dark:border-white/10 rounded-md overflow-hidden">
+                      {browseEntries.map((entry) => (
+                        <div
+                          key={entry.relativePath}
+                          className="px-3 py-2 flex items-center justify-between gap-3 bg-slate-50 dark:bg-[#0B0F17]"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <Folder className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                            <span dir="ltr" className="font-mono text-[11px] text-slate-800 dark:text-slate-200 truncate">
+                              {entry.name}
+                              {entry.isDirectory ? '/' : ''}
+                            </span>
+                          </div>
+                          {!entry.isDirectory && entry.sizeBytes !== undefined && (
+                            <span dir="ltr" className="font-mono text-[11px] text-slate-500 dark:text-slate-400 shrink-0">
+                              {(entry.sizeBytes / 1024).toFixed(1)} KB
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="px-5 py-3 border-t border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-[#0E131D] flex items-center justify-between gap-2 text-xs">
+                  <span className="text-slate-500 dark:text-slate-400 tabular-nums">
+                    {t('android.folderItemsCount', { count: browseEntries.length })}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void getPlatformAdapter().openStorageFolder(browseSubdir)}
+                      className="px-3 py-1.5 font-medium rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 dark:border-white/15 dark:bg-[#121823] dark:text-slate-200 dark:hover:bg-white/5"
+                    >
+                      {t('settings.openFolderBtn')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBrowseSubdir(null)}
+                      className="px-3 py-1.5 font-semibold rounded bg-blue-600 text-white hover:bg-blue-500"
+                    >
+                      {t('common.close')}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </section>
 
         {/* Language */}

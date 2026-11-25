@@ -1377,28 +1377,58 @@ export async function exportModArchiveBlob(
   };
 }
 
+export async function generateUniqueExportFilename(
+  baseFilename: string,
+  existsFn: (candidate: string) => Promise<boolean> | boolean
+): Promise<string> {
+  const clean = baseFilename.trim() || 'world-of-adventure-mod.woamod';
+  if (!(await existsFn(clean))) {
+    return clean;
+  }
+  const dotIdx = clean.lastIndexOf('.');
+  const stem = dotIdx > 0 ? clean.slice(0, dotIdx) : clean;
+  const ext = dotIdx > 0 ? clean.slice(dotIdx) : '';
+  for (let i = 2; i < 1000; i++) {
+    const candidate = `${stem} (${i})${ext}`;
+    if (!(await existsFn(candidate))) {
+      return candidate;
+    }
+  }
+  return `${stem}-${Date.now()}${ext}`;
+}
+
 export async function saveExportedPackage(
   blob: Blob,
   filename: string,
-  options?: { promptSaveDialog?: boolean }
+  options?: {
+    promptSaveDialog?: boolean;
+    subdir?: 'Exports' | 'Backups' | 'Projects' | 'Assets' | 'Settings' | 'Templates';
+    conflictResolution?: 'ask' | 'replace' | 'rename';
+  }
 ): Promise<SaveExportResult> {
   return getPlatformAdapter().saveExportFile({
     fileName: filename,
     blob,
     mimeType: blob.type || 'application/octet-stream',
     promptSaveDialog: options?.promptSaveDialog,
+    subdir: options?.subdir,
+    conflictResolution: options?.conflictResolution,
   });
 }
 
 export function triggerBlobDownload(blob: Blob, filename: string): void {
   const adapter = getPlatformAdapter();
   if (adapter.platform !== 'web') {
-    void adapter.saveExportFile({
-      fileName: filename,
-      blob,
-      mimeType: blob.type || 'application/octet-stream',
-      promptSaveDialog: false,
-    });
+    void adapter
+      .saveExportFile({
+        fileName: filename,
+        blob,
+        mimeType: blob.type || 'application/octet-stream',
+        promptSaveDialog: adapter.platform === 'android' ? true : false,
+      })
+      .catch(() => {
+        // Error already reported via AndroidAccessManager banner
+      });
     return;
   }
   const url = URL.createObjectURL(blob);
@@ -1409,6 +1439,90 @@ export function triggerBlobDownload(blob: Blob, filename: string): void {
   a.click();
   document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+export function validateBackupRecord(record: ProjectBackupRecord): void {
+  if (
+    !record ||
+    typeof record !== 'object' ||
+    !record.project ||
+    !record.project.manifest ||
+    !Array.isArray(record.project.files) ||
+    !Array.isArray(record.project.assets)
+  ) {
+    throw new Error(t('builder.errInvalidJsonImport'));
+  }
+  const safeModId = sanitizeSafeModId(record.project.manifest.modId);
+  if (!record.project.manifest.name?.trim() || !record.project.manifest.version?.trim()) {
+    throw new Error(t('builder.errInvalidJsonImport'));
+  }
+  if (!safeModId) {
+    throw new Error(t('builder.errInvalidJsonImport'));
+  }
+  sanitizeManifestEntryPoint(record.project.manifest.entryPoint);
+}
+
+export async function parseBackupRecordFile(file: File): Promise<ProjectBackupRecord> {
+  assertSafeFileSize(file.size, MAX_JSON_IMPORT_BYTES, `Backup file "${file.name}"`);
+  const text = await file.text();
+  const parsed = safeJsonParse<Partial<ProjectBackupRecord>>(text);
+
+  if (
+    !parsed ||
+    !parsed.project?.manifest ||
+    !Array.isArray(parsed.project.files) ||
+    !Array.isArray(parsed.project.assets)
+  ) {
+    throw new Error(t('builder.errInvalidJsonImport'));
+  }
+
+  const safeModId = sanitizeSafeModId(parsed.project.manifest.modId);
+  const restoredProject: ModProject = syncContentFilesInProject(
+    {
+      ...parsed.project,
+      id: safeModId,
+      manifest: {
+        ...parsed.project.manifest,
+        modId: safeModId,
+        entryPoint: sanitizeManifestEntryPoint(parsed.project.manifest.entryPoint),
+      },
+      lastOpenedAt: new Date().toISOString(),
+    },
+    resolveProjectContents(parsed.project)
+  );
+
+  const normalizedRecord: ProjectBackupRecord = {
+    id:
+      typeof parsed.id === 'string' && parsed.id.trim()
+        ? parsed.id.trim()
+        : `backup_restore_${Date.now()}`,
+    modId: restoredProject.manifest.modId,
+    modName:
+      typeof parsed.modName === 'string' && parsed.modName.trim()
+        ? parsed.modName.trim()
+        : restoredProject.manifest.name,
+    version:
+      typeof parsed.version === 'string' && parsed.version.trim()
+        ? parsed.version.trim()
+        : restoredProject.manifest.version,
+    label:
+      typeof parsed.label === 'string' && parsed.label.trim()
+        ? parsed.label.trim()
+        : file.name,
+    createdAt:
+      typeof parsed.createdAt === 'string' && parsed.createdAt.trim()
+        ? parsed.createdAt.trim()
+        : new Date().toISOString(),
+    reason: parsed.reason === 'pre-build' ? 'pre-build' : 'manual',
+    sizeBytes:
+      typeof parsed.sizeBytes === 'number' && parsed.sizeBytes >= 0
+        ? parsed.sizeBytes
+        : file.size,
+    project: restoredProject,
+  };
+
+  validateBackupRecord(normalizedRecord);
+  return normalizedRecord;
 }
 
 export function formatProjectZipFilename(modName: string, modId: string): string {

@@ -16,6 +16,8 @@ import type {
 } from '../src/types/mod';
 import {
   STORAGE_SUBDIRS,
+  type DedicatedFolderEntry,
+  type StorageConfig,
   type StorageLocationInfo,
   type StorageSubdir,
 } from '../src/platform/types';
@@ -79,6 +81,73 @@ function resolveConfined(subdir: StorageSubdir, ...segments: string[]): string {
   return resolved;
 }
 
+function resolveConfinedRelativePath(subdir: StorageSubdir, relativePath?: string): string {
+  const base = path.resolve(getSubdirPath(subdir));
+  if (!relativePath || !relativePath.trim()) {
+    return base;
+  }
+  const parts = relativePath
+    .replace(/\\/g, '/')
+    .split('/')
+    .map((p) => p.trim())
+    .filter(Boolean);
+  return resolveConfined(subdir, ...parts);
+}
+
+async function atomicWriteFile(
+  targetPath: string,
+  content: string | Buffer
+): Promise<void> {
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
+  const tempPath = `${targetPath}.woatmp-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  try {
+    if (typeof content === 'string') {
+      await fs.writeFile(tempPath, content, 'utf8');
+    } else {
+      await fs.writeFile(tempPath, content);
+    }
+    await fs.rename(tempPath, targetPath);
+  } finally {
+    await fs.rm(tempPath, { force: true }).catch(() => {});
+  }
+}
+
+async function existsPath(targetPath: string): Promise<boolean> {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function generateUniqueFileNameInDir(
+  subdir: StorageSubdir,
+  fileName: string
+): Promise<string> {
+  const safeName = sanitizeSegment(fileName);
+  if (!(await existsPath(resolveConfined(subdir, safeName)))) {
+    return safeName;
+  }
+  const dotIdx = safeName.lastIndexOf('.');
+  const stem = dotIdx > 0 ? safeName.slice(0, dotIdx) : safeName;
+  const ext = dotIdx > 0 ? safeName.slice(dotIdx) : '';
+  for (let i = 2; i < 1000; i++) {
+    const candidate = `${stem} (${i})${ext}`;
+    if (!(await existsPath(resolveConfined(subdir, candidate)))) {
+      return candidate;
+    }
+  }
+  return `${stem}-${Date.now()}${ext}`;
+}
+
+function formatBackupFolder(isoDate?: string): string {
+  const d = isoDate ? new Date(isoDate) : new Date();
+  const valid = Number.isNaN(d.getTime()) ? new Date() : d;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `backup-${valid.getFullYear()}-${pad(valid.getMonth() + 1)}-${pad(valid.getDate())}-${pad(valid.getHours())}${pad(valid.getMinutes())}`;
+}
+
 function isBlockedFileName(fileName: string): boolean {
   const ext = path.extname(fileName).replace(/^\./, '').toLowerCase();
   return ext !== '' && BLOCKED_EXTENSIONS.has(ext);
@@ -126,6 +195,8 @@ async function ensureAllStorageDirectories(): Promise<StorageLocationInfo> {
     platform: 'windows',
     rootPath,
     mode: 'native-documents',
+    folderAccessValid: true,
+    folderAccessRevoked: false,
     subdirectories,
   };
 }
@@ -236,6 +307,65 @@ function installAppMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+async function writeProjectFolderStructure(project: ModProject): Promise<void> {
+  const safeFolder = sanitizeSegment(project.id);
+  const projectDir = resolveConfined('Projects', safeFolder);
+  for (const nested of ['data', 'localization', 'scripts']) {
+    await fs.mkdir(path.join(projectDir, nested), { recursive: true });
+  }
+  await atomicWriteFile(
+    resolveConfined('Projects', safeFolder, '.woa-project.json'),
+    JSON.stringify(project, null, 2)
+  );
+  await atomicWriteFile(
+    resolveConfined('Projects', safeFolder, 'mod.json'),
+    JSON.stringify(project.manifest, null, 2)
+  );
+  await atomicWriteFile(
+    resolveConfined('Projects', safeFolder, 'mod.manifest.json'),
+    JSON.stringify(
+      {
+        id: project.id,
+        modId: project.manifest.modId,
+        name: project.manifest.name,
+        version: project.manifest.version,
+        supportedGameVersion: project.manifest.supportedGameVersion,
+        targetPlatform: project.manifest.targetPlatform,
+        lastOpenedAt: project.lastOpenedAt,
+      },
+      null,
+      2
+    )
+  );
+  await atomicWriteFile(
+    resolveConfined('Projects', safeFolder, 'data', 'content.json'),
+    JSON.stringify(
+      {
+        items: project.items,
+        blocks: project.blocks,
+        recipes: project.recipes,
+        entities: project.entities,
+        quests: project.quests,
+        biomes: project.biomes,
+        structures: project.structures,
+      },
+      null,
+      2
+    )
+  );
+  await atomicWriteFile(
+    resolveConfined('Projects', safeFolder, 'localization', 'strings.json'),
+    JSON.stringify(project.localization ?? [], null, 2)
+  );
+  for (const script of project.scripts ?? []) {
+    const scriptName = sanitizeSegment(script.name || `${script.id}.ts`);
+    await atomicWriteFile(
+      resolveConfined('Projects', safeFolder, 'scripts', scriptName),
+      script.content ?? ''
+    );
+  }
+}
+
 function registerIpcHandlers(): void {
   ipcMain.handle('woa:get-storage-info', async () => {
     return ensureAllStorageDirectories();
@@ -257,7 +387,9 @@ function registerIpcHandlers(): void {
     await ensureAllStorageDirectories();
     const dir = getSubdirPath('Projects');
     const entries = await fs.readdir(dir, { withFileTypes: true });
-    const projects: ModProject[] = [];
+    const projectMap = new Map<string, ModProject>();
+
+    // First scan legacy flat *.woaproj.json files
     for (const entry of entries) {
       if (!entry.isFile() || !entry.name.endsWith('.woaproj.json')) continue;
       try {
@@ -265,26 +397,87 @@ function registerIpcHandlers(): void {
         const stat = await fs.stat(fullPath);
         if (stat.size > 20 * 1024 * 1024) continue;
         const raw = await fs.readFile(fullPath, 'utf8');
-        projects.push(JSON.parse(raw) as ModProject);
+        const parsed = JSON.parse(raw) as ModProject;
+        if (parsed?.id) projectMap.set(parsed.id, parsed);
       } catch {
         // skip corrupted file
       }
     }
-    return projects.sort(
+
+    // Then scan structured per-project folders Projects/<safeId>/.woa-project.json
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.endsWith('.woatmp')) continue;
+      try {
+        const fullPath = resolveConfined('Projects', entry.name, '.woa-project.json');
+        if (!(await existsPath(fullPath))) continue;
+        const stat = await fs.stat(fullPath);
+        if (stat.size > 20 * 1024 * 1024) continue;
+        const raw = await fs.readFile(fullPath, 'utf8');
+        const parsed = JSON.parse(raw) as ModProject;
+        if (!parsed?.id) continue;
+        const existing = projectMap.get(parsed.id);
+        if (
+          !existing ||
+          new Date(parsed.lastOpenedAt).getTime() >= new Date(existing.lastOpenedAt).getTime()
+        ) {
+          projectMap.set(parsed.id, parsed);
+        }
+      } catch {
+        // skip corrupted project directory
+      }
+    }
+
+    return Array.from(projectMap.values()).sort(
       (a, b) => new Date(b.lastOpenedAt).getTime() - new Date(a.lastOpenedAt).getTime()
     );
   });
 
   ipcMain.handle('woa:write-project', async (_event, project: ModProject) => {
     await ensureAllStorageDirectories();
-    const filePath = resolveConfined('Projects', `${project.id}.woaproj.json`);
-    await fs.writeFile(filePath, JSON.stringify(project, null, 2), 'utf8');
+    await writeProjectFolderStructure(project);
+    const legacyPath = resolveConfined('Projects', `${project.id}.woaproj.json`);
+    await fs.rm(legacyPath, { force: true }).catch(() => {});
   });
+
+  ipcMain.handle(
+    'woa:rename-project',
+    async (_event, payload: { oldModId: string; project: ModProject }) => {
+      await ensureAllStorageDirectories();
+      await writeProjectFolderStructure(payload.project);
+      if (payload.oldModId && payload.oldModId !== payload.project.id) {
+        try {
+          const oldFolder = resolveConfined('Projects', sanitizeSegment(payload.oldModId));
+          await fs.rm(oldFolder, { recursive: true, force: true });
+        } catch {
+          // ignore
+        }
+        try {
+          const legacyPath = resolveConfined('Projects', `${payload.oldModId}.woaproj.json`);
+          await fs.rm(legacyPath, { force: true });
+        } catch {
+          // ignore
+        }
+        try {
+          const oldAssetDir = resolveConfined('Assets', sanitizeSegment(payload.oldModId));
+          const newAssetDir = resolveConfined('Assets', sanitizeSegment(payload.project.id));
+          if (await existsPath(oldAssetDir)) {
+            if (!(await existsPath(newAssetDir))) {
+              await fs.rename(oldAssetDir, newAssetDir);
+            }
+          }
+        } catch {
+          // ignore asset dir migration errors
+        }
+      }
+    }
+  );
 
   ipcMain.handle('woa:delete-project', async (_event, modId: string) => {
     await ensureAllStorageDirectories();
-    const filePath = resolveConfined('Projects', `${modId}.woaproj.json`);
-    await fs.rm(filePath, { force: true });
+    const safeId = sanitizeSegment(modId);
+    await fs.rm(resolveConfined('Projects', safeId), { recursive: true, force: true });
+    await fs.rm(resolveConfined('Projects', `${modId}.woaproj.json`), { force: true });
+    await fs.rm(resolveConfined('Assets', safeId), { recursive: true, force: true }).catch(() => {});
   });
 
   ipcMain.handle(
@@ -297,27 +490,26 @@ function registerIpcHandlers(): void {
       if (payload.data.byteLength > 60 * 1024 * 1024) {
         throw new Error('Asset blob exceeds maximum allowed size (60 MB).');
       }
-      const [modPart, assetPart] = payload.key.split('/');
+      const [modPart, ...restParts] = payload.key.replace(/\\/g, '/').split('/').filter(Boolean);
       const safeFolder = sanitizeSegment(modPart || 'shared');
-      const safeFile = sanitizeSegment(assetPart || payload.key);
+      const safeFile = sanitizeSegment(restParts.join('_') || payload.key);
       const dir = resolveConfined('Assets', safeFolder);
       await fs.mkdir(dir, { recursive: true });
       const binPath = resolveConfined('Assets', safeFolder, `${safeFile}.bin`);
       const metaPath = resolveConfined('Assets', safeFolder, `${safeFile}.meta.json`);
-      await fs.writeFile(binPath, Buffer.from(payload.data));
-      await fs.writeFile(
+      await atomicWriteFile(binPath, Buffer.from(payload.data));
+      await atomicWriteFile(
         metaPath,
-        JSON.stringify({ mimeType: payload.mimeType || 'application/octet-stream' }),
-        'utf8'
+        JSON.stringify({ mimeType: payload.mimeType || 'application/octet-stream' })
       );
     }
   );
 
   ipcMain.handle('woa:read-asset-blob', async (_event, key: string) => {
     try {
-      const [modPart, assetPart] = key.split('/');
+      const [modPart, ...restParts] = key.replace(/\\/g, '/').split('/').filter(Boolean);
       const safeFolder = sanitizeSegment(modPart || 'shared');
-      const safeFile = sanitizeSegment(assetPart || key);
+      const safeFile = sanitizeSegment(restParts.join('_') || key);
       const binPath = resolveConfined('Assets', safeFolder, `${safeFile}.bin`);
       const metaPath = resolveConfined('Assets', safeFolder, `${safeFile}.meta.json`);
       const buf = await fs.readFile(binPath);
@@ -336,9 +528,9 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('woa:delete-asset-blob', async (_event, key: string) => {
     try {
-      const [modPart, assetPart] = key.split('/');
+      const [modPart, ...restParts] = key.replace(/\\/g, '/').split('/').filter(Boolean);
       const safeFolder = sanitizeSegment(modPart || 'shared');
-      const safeFile = sanitizeSegment(assetPart || key);
+      const safeFile = sanitizeSegment(restParts.join('_') || key);
       const binPath = resolveConfined('Assets', safeFolder, `${safeFile}.bin`);
       const metaPath = resolveConfined('Assets', safeFolder, `${safeFile}.meta.json`);
       await fs.rm(binPath, { force: true });
@@ -350,43 +542,98 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('woa:write-backup', async (_event, record: ProjectBackupRecord) => {
     await ensureAllStorageDirectories();
-    const filePath = resolveConfined('Backups', `${record.id}.backup.json`);
-    await fs.writeFile(filePath, JSON.stringify(record, null, 2), 'utf8');
+    const projectSeg = sanitizeSegment(record.project?.id || record.modId);
+    const baseFolder = formatBackupFolder(record.createdAt);
+    let backupFolder = baseFolder;
+    let candidatePath = resolveConfined('Backups', projectSeg, backupFolder, 'backup.json');
+    if (await existsPath(candidatePath)) {
+      backupFolder = `${baseFolder}-${sanitizeSegment(record.id.slice(-6))}`;
+      candidatePath = resolveConfined('Backups', projectSeg, backupFolder, 'backup.json');
+    }
+    await atomicWriteFile(candidatePath, JSON.stringify(record, null, 2));
   });
 
   ipcMain.handle('woa:list-backups', async (_event, modId?: string) => {
     await ensureAllStorageDirectories();
     const dir = getSubdirPath('Backups');
     const entries = await fs.readdir(dir, { withFileTypes: true });
-    const rows: ProjectBackupRecord[] = [];
+    const rowMap = new Map<string, ProjectBackupRecord>();
+
+    // Scan legacy flat *.backup.json files
     for (const entry of entries) {
       if (!entry.isFile() || !entry.name.endsWith('.backup.json')) continue;
       try {
         const fullPath = resolveConfined('Backups', entry.name);
         const raw = await fs.readFile(fullPath, 'utf8');
         const parsed = JSON.parse(raw) as ProjectBackupRecord;
-        if (!modId || parsed.modId === modId) {
-          rows.push(parsed);
+        if (!modId || parsed.modId === modId || parsed.project?.id === modId) {
+          rowMap.set(parsed.id, parsed);
         }
       } catch {
         // ignore
       }
     }
-    return rows.sort(
+
+    // Scan structured Backups/<modId>/backup-YYYY-MM-DD-HHmm/backup.json
+    for (const modEntry of entries) {
+      if (!modEntry.isDirectory() || modEntry.name.endsWith('.woatmp')) continue;
+      try {
+        const modBackupsDir = resolveConfined('Backups', modEntry.name);
+        const childDirs = await fs.readdir(modBackupsDir, { withFileTypes: true });
+        for (const subEntry of childDirs) {
+          if (!subEntry.isDirectory()) continue;
+          const bkpFile = resolveConfined('Backups', modEntry.name, subEntry.name, 'backup.json');
+          if (!(await existsPath(bkpFile))) continue;
+          const raw = await fs.readFile(bkpFile, 'utf8');
+          const parsed = JSON.parse(raw) as ProjectBackupRecord;
+          if (!modId || parsed.modId === modId || parsed.project?.id === modId) {
+            rowMap.set(parsed.id, parsed);
+          }
+        }
+      } catch {
+        // ignore malformed backup subfolder
+      }
+    }
+
+    return Array.from(rowMap.values()).sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
   });
 
   ipcMain.handle('woa:delete-backup', async (_event, backupId: string) => {
     await ensureAllStorageDirectories();
-    const filePath = resolveConfined('Backups', `${backupId}.backup.json`);
-    await fs.rm(filePath, { force: true });
+    const legacyPath = resolveConfined('Backups', `${backupId}.backup.json`);
+    await fs.rm(legacyPath, { force: true }).catch(() => {});
+
+    const dir = getSubdirPath('Backups');
+    const modEntries = await fs.readdir(dir, { withFileTypes: true });
+    for (const modEntry of modEntries) {
+      if (!modEntry.isDirectory()) continue;
+      const modBackupsDir = resolveConfined('Backups', modEntry.name);
+      const childDirs = await fs.readdir(modBackupsDir, { withFileTypes: true });
+      for (const subEntry of childDirs) {
+        if (!subEntry.isDirectory()) continue;
+        const bkpFile = resolveConfined('Backups', modEntry.name, subEntry.name, 'backup.json');
+        if (!(await existsPath(bkpFile))) continue;
+        try {
+          const parsed = JSON.parse(await fs.readFile(bkpFile, 'utf8')) as ProjectBackupRecord;
+          if (parsed.id === backupId) {
+            await fs.rm(resolveConfined('Backups', modEntry.name, subEntry.name), {
+              recursive: true,
+              force: true,
+            });
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
   });
 
   ipcMain.handle('woa:write-settings', async (_event, settings: EditorSettings) => {
     await ensureAllStorageDirectories();
     const filePath = resolveConfined('Settings', 'editor-settings.json');
-    await fs.writeFile(filePath, JSON.stringify(settings, null, 2), 'utf8');
+    await atomicWriteFile(filePath, JSON.stringify(settings, null, 2));
   });
 
   ipcMain.handle('woa:read-settings', async () => {
@@ -399,37 +646,143 @@ function registerIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle('woa:write-storage-config', async (_event, config: StorageConfig) => {
+    await ensureAllStorageDirectories();
+    const filePath = resolveConfined('Settings', 'storage-config.json');
+    await atomicWriteFile(filePath, JSON.stringify(config, null, 2));
+  });
+
+  ipcMain.handle('woa:read-storage-config', async () => {
+    try {
+      const filePath = resolveConfined('Settings', 'storage-config.json');
+      const raw = await fs.readFile(filePath, 'utf8');
+      return JSON.parse(raw) as StorageConfig;
+    } catch {
+      return null;
+    }
+  });
+
+  ipcMain.handle(
+    'woa:export-file-exists',
+    async (_event, payload: { fileName: string; subdir?: StorageSubdir }) => {
+      await ensureAllStorageDirectories();
+      const subdir: StorageSubdir =
+        payload.subdir && STORAGE_SUBDIRS.includes(payload.subdir)
+          ? payload.subdir
+          : 'Exports';
+      const safeName = sanitizeSegment(payload.fileName);
+      return existsPath(resolveConfined(subdir, safeName));
+    }
+  );
+
+  ipcMain.handle(
+    'woa:list-subdir-entries',
+    async (_event, payload: { subdir: StorageSubdir; relativePath?: string }) => {
+      await ensureAllStorageDirectories();
+      const subdir: StorageSubdir =
+        payload.subdir && STORAGE_SUBDIRS.includes(payload.subdir)
+          ? payload.subdir
+          : 'Exports';
+      const dir = resolveConfinedRelativePath(subdir, payload.relativePath);
+      if (!(await existsPath(dir))) return [];
+      const dirents = await fs.readdir(dir, { withFileTypes: true });
+      const results: DedicatedFolderEntry[] = [];
+      for (const entry of dirents) {
+        if (entry.name.includes('.woatmp')) continue;
+        const full = path.join(dir, entry.name);
+        const stat = await fs.stat(full).catch(() => null);
+        const rel = payload.relativePath
+          ? `${payload.relativePath.replace(/\/+$/, '')}/${entry.name}`
+          : entry.name;
+        results.push({
+          name: entry.name,
+          relativePath: rel,
+          isDirectory: entry.isDirectory(),
+          sizeBytes: entry.isDirectory() ? undefined : stat?.size,
+          lastModified: stat ? stat.mtime.toISOString() : undefined,
+        });
+      }
+      return results.sort((a, b) => {
+        if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+    }
+  );
+
   ipcMain.handle(
     'woa:save-export-file',
     async (
       _event,
-      payload: { fileName: string; data: Uint8Array; promptDialog?: boolean }
+      payload: {
+        fileName: string;
+        data: Uint8Array;
+        promptDialog?: boolean;
+        subdir?: StorageSubdir;
+        conflictResolution?: 'ask' | 'replace' | 'rename';
+      }
     ) => {
       await ensureAllStorageDirectories();
-      const safeName = sanitizeSegment(payload.fileName);
-      if (isBlockedFileName(safeName)) {
-        throw new Error(`Blocked export extension: ${safeName}`);
+      const subdir: StorageSubdir =
+        payload.subdir && STORAGE_SUBDIRS.includes(payload.subdir)
+          ? payload.subdir
+          : 'Exports';
+      const requestedName = sanitizeSegment(payload.fileName);
+      if (isBlockedFileName(requestedName)) {
+        throw new Error(`Blocked export extension: ${requestedName}`);
       }
-      const defaultExportPath = resolveConfined('Exports', safeName);
-      await fs.writeFile(defaultExportPath, Buffer.from(payload.data));
 
       if (payload.promptDialog && mainWindow) {
         const result = await dialog.showSaveDialog(mainWindow, {
           title: 'Save Mod Export',
-          defaultPath: defaultExportPath,
+          defaultPath: resolveConfined(subdir, requestedName),
           filters: [
             { name: 'World of Adventure Mod', extensions: ['woamod', 'zip', 'json'] },
             { name: 'All Files', extensions: ['*'] },
           ],
         });
         if (result.canceled || !result.filePath) {
-          return { saved: true, filePath: defaultExportPath, cancelled: false };
+          return { saved: false, cancelled: true, locationLabel: '' };
         }
-        await fs.writeFile(result.filePath, Buffer.from(payload.data));
-        return { saved: true, filePath: result.filePath };
+        await atomicWriteFile(result.filePath, Buffer.from(payload.data));
+        return {
+          saved: true,
+          filePath: result.filePath,
+          fileName: path.basename(result.filePath),
+          directoryLabel: path.dirname(result.filePath),
+          locationLabel: result.filePath,
+        };
       }
 
-      return { saved: true, filePath: defaultExportPath };
+      let finalName = requestedName;
+      const requestedPath = resolveConfined(subdir, finalName);
+      if (await existsPath(requestedPath)) {
+        const policy = payload.conflictResolution ?? 'ask';
+        if (policy === 'ask') {
+          const suggestedName = await generateUniqueFileNameInDir(subdir, requestedName);
+          return {
+            saved: false,
+            conflict: true,
+            existingName: requestedName,
+            suggestedName,
+            directoryLabel: `${ROOT_DIR_NAME}/${subdir}/`,
+            locationLabel: requestedPath,
+          };
+        }
+        if (policy === 'rename') {
+          finalName = await generateUniqueFileNameInDir(subdir, requestedName);
+        }
+      }
+
+      const finalExportPath = resolveConfined(subdir, finalName);
+      await atomicWriteFile(finalExportPath, Buffer.from(payload.data));
+
+      return {
+        saved: true,
+        filePath: finalExportPath,
+        fileName: finalName,
+        directoryLabel: `${ROOT_DIR_NAME}/${subdir}/`,
+        locationLabel: finalExportPath,
+      };
     }
   );
 

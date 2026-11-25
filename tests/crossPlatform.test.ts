@@ -40,6 +40,7 @@ import {
   exportModArchiveBlob,
   importModFromFile,
   isDevelopmentOnlyPath,
+  parseBackupRecordFile,
 } from '../src/core/builder/modBuilder';
 import { validateModProject } from '../src/core/validation/modValidator';
 import {
@@ -47,6 +48,14 @@ import {
   detectRuntimePlatform,
   getPlatformCapabilities,
 } from '../src/platform/detect';
+import {
+  AndroidAccessDeniedError,
+  classifyAndroidNativeError,
+  detectAndroidStorageCapabilities,
+  doesOperationRequireRuntimePermission,
+  getDefaultDeniedMessage,
+  inferImportOperationFromAccept,
+} from '../src/platform/androidAccessManager';
 import {
   APP_DISPLAY_NAME,
   APP_ID,
@@ -544,3 +553,161 @@ test('general .woa3d classification, serialization, import, and category/content
   const badWoaFile = new File([await badWoaZip.generateAsync({ type: 'blob' })], 'broken.woamod');
   await assert.rejects(() => importModFromFile(badWoaFile), /Corrupted WOA3D JSON/i);
 });
+
+test('Android storage capability detection and runtime permission rules across API levels (Android 7 to 15+)', () => {
+  const api24 = detectAndroidStorageCapabilities(24);
+  assert.equal(api24.tier, 'legacy-external');
+  assert.equal(api24.usesScopedStorage, false);
+  assert.equal(api24.isAndroid13Plus, false);
+  assert.equal(api24.requiresLegacyStoragePermission, true);
+
+  const api28 = detectAndroidStorageCapabilities(28);
+  assert.equal(api28.tier, 'legacy-external');
+  assert.equal(api28.usesScopedStorage, false);
+
+  const api29 = detectAndroidStorageCapabilities(29);
+  assert.equal(api29.tier, 'scoped-pre13');
+  assert.equal(api29.usesScopedStorage, true);
+  assert.equal(api29.isAndroid13Plus, false);
+  assert.equal(api29.requiresLegacyStoragePermission, false);
+
+  const api32 = detectAndroidStorageCapabilities(32);
+  assert.equal(api32.tier, 'scoped-pre13');
+  assert.equal(api32.usesScopedStorage, true);
+  assert.equal(api32.isAndroid13Plus, false);
+
+  for (const sdk of [33, 35, 36]) {
+    const caps = detectAndroidStorageCapabilities(sdk);
+    assert.equal(caps.tier, 'scoped-android13-plus');
+    assert.equal(caps.usesScopedStorage, true);
+    assert.equal(caps.isAndroid13Plus, true);
+    assert.equal(caps.requiresLegacyStoragePermission, false);
+    assert.equal(caps.usesSafByDefault, true);
+  }
+
+  // App-private storage NEVER requires runtime permission at any API level
+  for (const op of ['app-storage', 'open-project', 'save-project'] as const) {
+    assert.equal(doesOperationRequireRuntimePermission(op, 24, true), false);
+    assert.equal(doesOperationRequireRuntimePermission(op, 29, true), false);
+    assert.equal(doesOperationRequireRuntimePermission(op, 33, true), false);
+    assert.equal(doesOperationRequireRuntimePermission(op, 36, true), false);
+  }
+
+  // SAF operations never require runtime permissions on API 29+/33+ or when using picker on API < 29
+  for (const op of ['import-mod', 'export-mod', 'import-media', 'pick-directory', 'backup-export', 'backup-restore'] as const) {
+    assert.equal(doesOperationRequireRuntimePermission(op, 24, false), false);
+    assert.equal(doesOperationRequireRuntimePermission(op, 24, true), true);
+    assert.equal(doesOperationRequireRuntimePermission(op, 29, true), false);
+    assert.equal(doesOperationRequireRuntimePermission(op, 33, true), false);
+    assert.equal(doesOperationRequireRuntimePermission(op, 35, true), false);
+  }
+
+  assert.equal(inferImportOperationFromAccept(['.woamod', '.zip']), 'import-mod');
+  assert.equal(inferImportOperationFromAccept(['.png', '.glb', '.mp3']), 'import-media');
+  assert.equal(inferImportOperationFromAccept(['.woabackup.json']), 'backup-restore');
+});
+
+test('Android error classification, localized denial strings, and native manifest/plugin contracts', () => {
+  assert.equal(classifyAndroidNativeError('ACCESS_DENIED: File permission denied').code, 'ACCESS_DENIED');
+  assert.equal(classifyAndroidNativeError('READ_FAILED: Unable to read stream').code, 'READ_FAILED');
+  assert.equal(classifyAndroidNativeError('WRITE_FAILED: Disk full').code, 'WRITE_FAILED');
+  assert.equal(classifyAndroidNativeError('PICKER_UNAVAILABLE: No activity').code, 'PICKER_UNAVAILABLE');
+  assert.equal(classifyAndroidNativeError(new Error('java.lang.SecurityException: Permission Denial')).code, 'ACCESS_DENIED');
+
+  const deniedErr = new AndroidAccessDeniedError('import-mod');
+  assert.equal(
+    deniedErr.message,
+    'File access was denied. Please allow access or select the file again.'
+  );
+  assert.equal(
+    getDefaultDeniedMessage(),
+    'File access was denied. Please allow access or select the file again.'
+  );
+  assert.equal(
+    en['android.fileAccessDenied'],
+    'File access was denied. Please allow access or select the file again.'
+  );
+  assert.equal(
+    ar['android.fileAccessDenied'],
+    'تم رفض الوصول إلى الملف. يرجى السماح بالوصول أو اختيار الملف مرة أخرى.'
+  );
+
+  const rootDir = process.cwd();
+  const manifestXml = fs.readFileSync(
+    path.join(rootDir, 'android/app/src/main/AndroidManifest.xml'),
+    'utf8'
+  );
+  assert.match(manifestXml, /android\.permission\.INTERNET/);
+  assert.match(
+    manifestXml,
+    /android:name="android\.permission\.READ_EXTERNAL_STORAGE"[^>]*android:maxSdkVersion="32"/
+  );
+  assert.match(
+    manifestXml,
+    /android:name="android\.permission\.WRITE_EXTERNAL_STORAGE"[^>]*android:maxSdkVersion="29"/
+  );
+
+  for (const forbidden of [
+    'MANAGE_EXTERNAL_STORAGE',
+    'READ_MEDIA_IMAGES',
+    'READ_MEDIA_AUDIO',
+    'READ_MEDIA_VIDEO',
+    'android.permission.CAMERA',
+    'ACCESS_FINE_LOCATION',
+    'ACCESS_COARSE_LOCATION',
+    'BLUETOOTH',
+    'READ_CONTACTS',
+    'READ_PHONE_STATE',
+    'READ_SMS',
+    'RECORD_AUDIO',
+    'READ_CALL_LOG',
+    'READ_CALENDAR',
+  ]) {
+    assert.equal(
+      manifestXml.includes(forbidden),
+      false,
+      `AndroidManifest.xml must not request forbidden/unrelated permission ${forbidden}`
+    );
+  }
+
+  const pluginJava = fs.readFileSync(
+    path.join(rootDir, 'android/app/src/main/java/com/woa/modcreator/WoaStoragePlugin.java'),
+    'utf8'
+  );
+  assert.match(pluginJava, /ACTION_OPEN_DOCUMENT\b/);
+  assert.match(pluginJava, /ACTION_CREATE_DOCUMENT\b/);
+  assert.match(pluginJava, /ACTION_OPEN_DOCUMENT_TREE\b/);
+  assert.match(pluginJava, /takePersistableUriPermission\b/);
+  assert.match(pluginJava, /ACTION_APPLICATION_DETAILS_SETTINGS\b/);
+  assert.equal(pluginJava.includes('MANAGE_EXTERNAL_STORAGE'), false);
+  assert.equal(pluginJava.includes('READ_MEDIA_'), false);
+});
+
+test('parseBackupRecordFile safely parses valid .woabackup.json, strips prototype pollution, and rejects invalid backups', async () => {
+  const sample = createStarterSampleProject();
+  const backupJson = JSON.stringify({
+    id: 'bk_1',
+    modId: sample.manifest.modId,
+    modName: sample.manifest.name,
+    version: sample.manifest.version,
+    label: 'Manual Backup Test',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    reason: 'manual',
+    sizeBytes: 1024,
+    __proto__: { polluted: true },
+    project: sample,
+  });
+  const backupFile = new File([backupJson], 'skyreach.woabackup.json', {
+    type: 'application/json',
+  });
+  const restored = await parseBackupRecordFile(backupFile);
+  assert.equal(restored.modId, sample.manifest.modId);
+  assert.equal(restored.label, 'Manual Backup Test');
+  assert.equal(Object.prototype.hasOwnProperty.call(restored, '__proto__'), false);
+
+  const badBackupFile = new File(['{"invalid": true}'], 'bad.woabackup.json', {
+    type: 'application/json',
+  });
+  await assert.rejects(() => parseBackupRecordFile(badBackupFile));
+});
+

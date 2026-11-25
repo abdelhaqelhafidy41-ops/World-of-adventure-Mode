@@ -8,7 +8,11 @@ import {
   LANGUAGE_STORAGE_KEY,
   t,
 } from '@/src/i18n';
-import { getPlatformAdapter } from '@/src/platform';
+import {
+  createDefaultStorageConfig,
+  getPlatformAdapter,
+  type StorageConfig,
+} from '@/src/platform';
 import {
   BuildHistoryEntry,
   EditorSettings,
@@ -24,8 +28,10 @@ const STORE_ASSET_BLOBS = 'asset_blobs';
 const STORE_BACKUPS = 'backups';
 const STORE_BUILD_HISTORY = 'build_history';
 const SETTINGS_KEY = 'editor_settings';
+const STORAGE_CONFIG_KEY = 'storage_config';
 const LS_PROJECTS_FALLBACK = 'woa_mod_creator_projects_v1';
 const LS_SETTINGS_FALLBACK = 'woa_mod_creator_settings_v1';
+const LS_STORAGE_CONFIG_FALLBACK = 'woa_mod_creator_storage_config_v1';
 const LS_BACKUPS_FALLBACK = 'woa_mod_creator_backups_v1';
 const LS_BUILDS_FALLBACK = 'woa_mod_creator_build_history_v1';
 
@@ -187,6 +193,85 @@ export async function saveProject(project: ModProject): Promise<void> {
       // IndexedDB remains consistent even if native sync fails temporarily
     }
   }
+}
+
+export async function renameProject(
+  oldProjectId: string,
+  updatedProject: ModProject
+): Promise<ModProject> {
+  const normalized: ModProject = {
+    ...updatedProject,
+    lastOpenedAt: new Date().toISOString(),
+  };
+
+  if (oldProjectId === normalized.id) {
+    await saveProject(normalized);
+    return normalized;
+  }
+
+  // Update blob keys if project folder ID changed
+  const updatedAssets = normalized.assets.map((asset) => {
+    if (asset.blobKey && asset.blobKey.startsWith(`${oldProjectId}/`)) {
+      const suffix = asset.blobKey.slice(oldProjectId.length + 1);
+      return { ...asset, blobKey: `${normalized.id}/${suffix}` };
+    }
+    return asset;
+  });
+
+  const remappedProject: ModProject = {
+    ...normalized,
+    assets: updatedAssets,
+  };
+
+  for (let i = 0; i < normalized.assets.length; i++) {
+    const oldKey = normalized.assets[i]?.blobKey;
+    const newKey = remappedProject.assets[i]?.blobKey;
+    if (oldKey && newKey && oldKey !== newKey) {
+      await duplicateAssetBlob(oldKey, newKey);
+      await deleteAssetBlob(oldKey);
+    }
+  }
+
+  try {
+    const db = await openDatabase();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_PROJECTS, 'readwrite');
+      const store = tx.objectStore(STORE_PROJECTS);
+      store.delete(oldProjectId);
+      store.put(remappedProject);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch {
+    const existing = await listProjects();
+    const filtered = existing.filter(
+      (p) => p.id !== oldProjectId && p.id !== remappedProject.id
+    );
+    filtered.unshift(remappedProject);
+    localStorage.setItem(LS_PROJECTS_FALLBACK, JSON.stringify(filtered));
+  }
+
+  const adapter = getPlatformAdapter();
+  if (adapter.platform !== 'web') {
+    await ensureNativeDirectoriesOnce();
+    try {
+      if (adapter.syncRenameProject) {
+        await adapter.syncRenameProject(oldProjectId, remappedProject);
+      } else {
+        await adapter.syncSaveProject(remappedProject);
+        await adapter.syncDeleteProject(oldProjectId);
+      }
+    } catch {
+      // keep IDB consistent
+    }
+  }
+
+  const currentCfg = await loadStorageConfig();
+  if (currentCfg.lastOpenedProjectId === oldProjectId) {
+    await saveStorageConfig({ lastOpenedProjectId: remappedProject.id });
+  }
+
+  return remappedProject;
 }
 
 export async function deleteProject(modId: string): Promise<void> {
@@ -619,4 +704,91 @@ export async function saveSettings(settings: EditorSettings): Promise<void> {
       // ignore
     }
   }
+}
+
+export async function loadStorageConfig(): Promise<StorageConfig> {
+  const fallback = createDefaultStorageConfig();
+  const adapter = getPlatformAdapter();
+
+  if (adapter.syncLoadStorageConfig) {
+    try {
+      const nativeCfg = await adapter.syncLoadStorageConfig();
+      if (nativeCfg) {
+        return { ...fallback, ...nativeCfg };
+      }
+    } catch {
+      // fall through to IndexedDB / localStorage
+    }
+  }
+
+  try {
+    const db = await openDatabase();
+    const stored = await new Promise<Partial<StorageConfig> | null>((resolve) => {
+      const tx = db.transaction(STORE_SETTINGS, 'readonly');
+      const req = tx.objectStore(STORE_SETTINGS).get(STORAGE_CONFIG_KEY);
+      req.onsuccess = () =>
+        resolve((req.result as Partial<StorageConfig> | undefined) ?? null);
+      req.onerror = () => resolve(null);
+    });
+    if (stored) {
+      return { ...fallback, ...stored };
+    }
+  } catch {
+    // fall through to localStorage
+  }
+
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const raw = window.localStorage.getItem(LS_STORAGE_CONFIG_FALLBACK);
+      if (raw) {
+        return { ...fallback, ...(JSON.parse(raw) as Partial<StorageConfig>) };
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  return fallback;
+}
+
+export async function saveStorageConfig(
+  patch: Partial<StorageConfig>
+): Promise<StorageConfig> {
+  const current = await loadStorageConfig();
+  const next: StorageConfig = {
+    ...current,
+    ...patch,
+    updatedAt: new Date().toISOString(),
+  };
+
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(LS_STORAGE_CONFIG_FALLBACK, JSON.stringify(next));
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
+    const db = await openDatabase();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_SETTINGS, 'readwrite');
+      tx.objectStore(STORE_SETTINGS).put(next, STORAGE_CONFIG_KEY);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch {
+    // fallback already saved above
+  }
+
+  const adapter = getPlatformAdapter();
+  if (adapter.syncSaveStorageConfig) {
+    try {
+      await adapter.syncSaveStorageConfig(next);
+    } catch {
+      // ignore
+    }
+  }
+
+  return next;
 }

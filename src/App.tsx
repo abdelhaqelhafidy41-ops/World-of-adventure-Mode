@@ -4,6 +4,7 @@
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
+import { AlertTriangle, RefreshCw, Settings, X } from 'lucide-react';
 import { BuildExportView } from '@/src/components/BuildExportView';
 import { CreateModModal } from '@/src/components/CreateModModal';
 import { ModApiDocsView } from '@/src/components/ModApiDocsView';
@@ -69,7 +70,16 @@ import {
   ValidationIssue,
 } from '@/src/types/mod';
 import { useI18n } from '@/src/i18n';
-import { useBackNavigation } from '@/src/platform';
+import {
+  AndroidAccessDeniedError,
+  type AndroidAccessIssue,
+  clearAndroidAccessIssue,
+  openAndroidAppSettings,
+  reportAndroidAccessError,
+  subscribeAndroidAccessIssue,
+  useBackNavigation,
+  usePlatform,
+} from '@/src/platform';
 
 const SEEDED_FLAG_KEY = 'woa_mod_creator_seeded_v1';
 
@@ -80,6 +90,7 @@ function formatTimestamp(): string {
 
 export default function App() {
   const { t, setLanguage } = useI18n();
+  const platformInfo = usePlatform();
   const [projects, setProjects] = useState<ModProject[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<AppView>('projects');
@@ -96,6 +107,7 @@ export default function App() {
     token: number;
   } | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
+  const [androidAccessIssue, setAndroidAccessIssue] = useState<AndroidAccessIssue | null>(null);
   const [logs, setLogs] = useState<ConsoleEntry[]>(() => [
     {
       id: 'init_1',
@@ -132,11 +144,20 @@ export default function App() {
   }, [settings.theme]);
 
   useEffect(() => {
+    if (platformInfo.platform !== 'android') {
+      setAndroidAccessIssue(null);
+      return;
+    }
+    return subscribeAndroidAccessIssue(setAndroidAccessIssue);
+  }, [platformInfo.platform]);
+
+  useEffect(() => {
     let mounted = true;
     (async () => {
-      const [loadedSettings, loadedProjects] = await Promise.all([
+      const [loadedSettings, loadedProjects, loadedStorageConfig] = await Promise.all([
         loadSettings(),
         listProjects(),
+        loadStorageConfig(),
       ]);
       if (!mounted) return;
 
@@ -160,9 +181,23 @@ export default function App() {
 
       setProjects(initialProjects);
       if (initialProjects.length > 0) {
-        setActiveProjectId(initialProjects[0].id);
+        const preferred = loadedStorageConfig.lastOpenedProjectId
+          ? initialProjects.find((p) => p.id === loadedStorageConfig.lastOpenedProjectId)
+          : null;
+        setActiveProjectId(preferred ? preferred.id : initialProjects[0].id);
       }
       setIsLoaded(true);
+
+      // Silently verify SAF directory health if previously granted (never prompts on startup)
+      const adapter = getPlatformAdapter();
+      if (adapter.platform === 'android' && adapter.checkStorageFolderAccess) {
+        const access = await adapter.checkStorageFolderAccess();
+        if (mounted && access.revoked) {
+          reportAndroidSafRevoked(async () => {
+            await adapter.pickStorageDirectory();
+          });
+        }
+      }
     })();
     return () => {
       mounted = false;
@@ -286,8 +321,10 @@ export default function App() {
   }, [handleManualSave, handleUndo, handleRedo]);
 
   const handleCreateMod = async (input: CreateModInput) => {
+    await getPlatformAdapter().ensureFirstTimeStorageSetup?.();
     const project = createModProject(input);
     await saveProject(project);
+    await saveStorageConfig({ lastOpenedProjectId: project.id });
     setProjects((prev) => [project, ...prev]);
     setActiveProjectId(project.id);
     setCreateOpen(false);
@@ -309,6 +346,7 @@ export default function App() {
       lastOpenedAt: new Date().toISOString(),
     };
     await saveProject(touched);
+    await saveStorageConfig({ lastOpenedProjectId: touched.id });
     setProjects((prev) => prev.map((p) => (p.id === touched.id ? touched : p)));
     setActiveProjectId(touched.id);
     setLastBuild(null);
@@ -324,8 +362,10 @@ export default function App() {
   };
 
   const handleImportProjectFile = async (file: File) => {
+    await getPlatformAdapter().ensureFirstTimeStorageSetup?.();
     const imported = await importModFromFile(file);
     await saveProject(imported);
+    await saveStorageConfig({ lastOpenedProjectId: imported.id });
     setProjects((prev) => {
       const filtered = prev.filter((p) => p.id !== imported.id);
       return [imported, ...filtered];
@@ -503,17 +543,196 @@ export default function App() {
   const handleDeleteProject = async (modId: string) => {
     const target = projects.find((p) => p.id === modId);
     await deleteProject(modId);
+    let nextActiveId: string | null = activeProjectId;
     setProjects((prev) => {
       const remaining = prev.filter((p) => p.id !== modId);
       if (activeProjectId === modId) {
-        setActiveProjectId(remaining[0]?.id ?? null);
+        nextActiveId = remaining[0]?.id ?? null;
+        setActiveProjectId(nextActiveId);
       }
       return remaining;
     });
+    await saveStorageConfig({ lastOpenedProjectId: nextActiveId });
     appendLog(
       'warn',
       'Project',
       t('app.deletedProject', { name: target?.manifest.name ?? modId })
+    );
+  };
+
+  const handleRenameProject = async (
+    project: ModProject,
+    newName: string,
+    newModId: string
+  ) => {
+    const trimmedName = newName.trim();
+    const trimmedModId = newModId.trim();
+    if (!trimmedName || !trimmedModId) return;
+
+    const oldProjectId = project.id;
+    const oldModId = project.manifest.modId;
+    const now = new Date().toISOString();
+    const modIdChanged = trimmedModId !== oldModId;
+
+    const updatedManifest: ModManifest = {
+      ...project.manifest,
+      modId: trimmedModId,
+      name: trimmedName,
+      updatedAt: now,
+    };
+
+    let updatedContents = resolveProjectContents(project);
+    if (modIdChanged) {
+      const oldPrefix = `${oldModId}:`;
+      const newPrefix = `${trimmedModId}:`;
+      const remapId = (id: string) =>
+        id.startsWith(oldPrefix) ? `${newPrefix}${id.slice(oldPrefix.length)}` : id;
+
+      updatedContents = {
+        items: updatedContents.items.map((e) => ({ ...e, id: remapId(e.id) })),
+        weapons: updatedContents.weapons.map((e) => ({
+          ...e,
+          id: remapId(e.id),
+          projectile: {
+            ...e.projectile,
+            projectileId: remapId(e.projectile.projectileId),
+          },
+        })),
+        armor: updatedContents.armor.map((e) => ({ ...e, id: remapId(e.id) })),
+        npcs: updatedContents.npcs.map((e) => ({
+          ...e,
+          id: remapId(e.id),
+          loot: e.loot.map((l) => ({ ...l, itemId: remapId(l.itemId) })),
+          questReferences: e.questReferences.map(remapId),
+        })),
+        monsters: updatedContents.monsters.map((e) => ({
+          ...e,
+          id: remapId(e.id),
+          loot: e.loot.map((l) => ({ ...l, itemId: remapId(l.itemId) })),
+        })),
+        quests: updatedContents.quests.map((e) => ({
+          ...e,
+          id: remapId(e.id),
+          giverNpcId: remapId(e.giverNpcId),
+          objectives: e.objectives.map((o) => ({ ...o, targetId: remapId(o.targetId) })),
+          rewards: {
+            ...e.rewards,
+            items: e.rewards.items.map((ri) => ({ ...ri, itemId: remapId(ri.itemId) })),
+          },
+          dialogue: e.dialogue.map((d) => ({ ...d, speakerNpcId: remapId(d.speakerNpcId) })),
+          chain: {
+            prerequisiteQuestIds: e.chain.prerequisiteQuestIds.map(remapId),
+            nextQuestId: remapId(e.chain.nextQuestId),
+          },
+        })),
+        recipes: updatedContents.recipes.map((e) => ({
+          ...e,
+          id: remapId(e.id),
+          outputItemId: remapId(e.outputItemId),
+          ingredients: e.ingredients.map((i) => ({ ...i, itemId: remapId(i.itemId) })),
+        })),
+        buildings: updatedContents.buildings.map((e) => ({
+          ...e,
+          id: remapId(e.id),
+          materials: e.materials.map((m) => ({ ...m, itemId: remapId(m.itemId) })),
+          doors: e.doors.map((d) => ({ ...d, keyItemId: remapId(d.keyItemId) })),
+          interactiveObjects: e.interactiveObjects.map((io) => ({
+            ...io,
+            targetId: remapId(io.targetId),
+          })),
+        })),
+        spawns: updatedContents.spawns.map((e) => ({
+          ...e,
+          id: remapId(e.id),
+          entityId: remapId(e.entityId),
+          conditions: {
+            ...e.conditions,
+            requiredQuestId: remapId(e.conditions.requiredQuestId),
+          },
+        })),
+        animations: (updatedContents.animations ?? []).map((e) => ({
+          ...e,
+          id: remapId(e.id),
+        })),
+        audioCues: (updatedContents.audioCues ?? []).map((e) => ({
+          ...e,
+          id: remapId(e.id),
+        })),
+        materials: (updatedContents.materials ?? []).map((e) => ({
+          ...e,
+          id: remapId(e.id),
+        })),
+        lootTables: (updatedContents.lootTables ?? []).map((e) => ({
+          ...e,
+          id: remapId(e.id),
+          entries: e.entries.map((le) => ({ ...le, itemId: remapId(le.itemId) })),
+        })),
+        dialogues: (updatedContents.dialogues ?? []).map((e) => ({
+          ...e,
+          id: remapId(e.id),
+          npcId: remapId(e.npcId),
+          nodes: e.nodes.map((n) => ({
+            ...n,
+            speakerNpcId: remapId(n.speakerNpcId),
+            questTriggerId: n.questTriggerId ? remapId(n.questTriggerId) : undefined,
+          })),
+        })),
+        worldObjects: (updatedContents.worldObjects ?? []).map((e) => ({
+          ...e,
+          id: remapId(e.id),
+          materialConfigId: remapId(e.materialConfigId),
+          audioCueId: remapId(e.audioCueId),
+          lootTableId: remapId(e.lootTableId),
+          questId: remapId(e.questId),
+        })),
+      };
+    }
+
+    const baseProject: ModProject = {
+      ...project,
+      id: modIdChanged ? trimmedModId : project.id,
+      manifest: updatedManifest,
+      files: project.files.map((f) =>
+        f.path === 'mod.manifest.json' || f.path === 'mod.json'
+          ? { ...f, content: serializeManifest(updatedManifest), updatedAt: now }
+          : { ...f }
+      ),
+      lastOpenedAt: now,
+    };
+
+    const syncedProject = syncContentFilesInProject(baseProject, updatedContents);
+    const saved = await renameProject(oldProjectId, syncedProject);
+
+    setProjects((prev) =>
+      prev.map((p) => (p.id === oldProjectId ? saved : p))
+    );
+    if (activeProjectId === oldProjectId) {
+      setActiveProjectId(saved.id);
+    }
+    appendLog(
+      'success',
+      'Project',
+      t('app.renamedProject', {
+        name: saved.manifest.name,
+        modId: saved.manifest.modId,
+      })
+    );
+  };
+
+  const handleQuickBackupProject = async (project: ModProject) => {
+    await getPlatformAdapter().ensureFirstTimeStorageSetup?.();
+    const saved = await saveProjectBackup(
+      project,
+      `Snapshot v${project.manifest.version}`,
+      'manual'
+    );
+    if (project.id === activeProjectId) {
+      setBackups((prev) => [saved, ...prev]);
+    }
+    appendLog(
+      'success',
+      'Backup',
+      t('app.backupCreatedNotice', { name: project.manifest.name })
     );
   };
 
@@ -1046,6 +1265,7 @@ export default function App() {
   const handleCreateBackup = useCallback(
     async (label: string, reason: ProjectBackupRecord['reason'] = 'manual') => {
       if (!activeProject) return;
+      await getPlatformAdapter().ensureFirstTimeStorageSetup?.();
       const saved = await saveProjectBackup(
         activeProject,
         label || `Snapshot v${activeProject.manifest.version}`,
@@ -1069,6 +1289,7 @@ export default function App() {
     );
     persistProjectUpdate(restored);
     await saveProject(restored);
+    await saveStorageConfig({ lastOpenedProjectId: restored.id });
     setActiveProjectId(restored.id);
     appendLog('warn', 'Backup', t('app.snapshotRestored', { label: backup.label }));
   };
@@ -1080,20 +1301,35 @@ export default function App() {
   };
 
   const handleExportProjectZip = async (targetProject: ModProject) => {
-    const blob = await exportWorkspaceProjectZip(targetProject);
-    const filename = formatProjectZipFilename(
-      targetProject.manifest.name,
-      targetProject.manifest.modId
-    );
-    const saved = await saveExportedPackage(blob, filename, { promptSaveDialog: true });
-    if (saved.cancelled) return;
-    appendLog(
-      'success',
-      'Exporter',
-      saved.locationLabel !== filename
-        ? t('build.savedToLocation', { location: saved.locationLabel })
-        : t('app.exportedBackup', { filename })
-    );
+    try {
+      await getPlatformAdapter().ensureFirstTimeStorageSetup?.();
+      const blob = await exportWorkspaceProjectZip(targetProject);
+      const filename = formatProjectZipFilename(
+        targetProject.manifest.name,
+        targetProject.manifest.modId
+      );
+      const saved = await saveExportedPackage(blob, filename, { promptSaveDialog: true });
+      if (saved.cancelled) return;
+      appendLog(
+        'success',
+        'Exporter',
+        saved.locationLabel !== filename
+          ? t('build.savedToLocation', { location: saved.locationLabel })
+          : t('app.exportedBackup', { filename })
+      );
+    } catch (err) {
+      if (err instanceof AndroidAccessDeniedError) {
+        reportAndroidAccessError(err.operation, err, {
+          permanentlyDenied: err.permanentlyDenied,
+          retryAction: () => void handleExportProjectZip(targetProject),
+        });
+      }
+      appendLog(
+        'error',
+        'Exporter',
+        err instanceof Error ? err.message : t('build.exportFailed')
+      );
+    }
   };
 
   const handleRecordBuildComplete = useCallback(
@@ -1186,6 +1422,12 @@ export default function App() {
     );
   }, [activeProject, handleCreateBackup]);
 
+  const handleSaveBeforeExport = useCallback(async () => {
+    if (!activeProject) return;
+    await saveProject(activeProject);
+    setLastSavedAt(formatTimestamp());
+  }, [activeProject]);
+
   useBackNavigation(() => {
     if (createOpen) {
       setCreateOpen(false);
@@ -1214,6 +1456,62 @@ export default function App() {
         onBuildMod={handleQuickBuild}
       />
 
+      {platformInfo.platform === 'android' && androidAccessIssue && (
+        <div
+          dir="auto"
+          role="alert"
+          className="shrink-0 px-4 py-3 border-b border-amber-500/30 bg-amber-500/10 text-xs text-amber-900 dark:text-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+        >
+          <div className="flex items-start gap-2.5 min-w-0">
+            <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+            <div className="min-w-0 space-y-0.5">
+              <div className="font-semibold text-slate-900 dark:text-slate-100">
+                {t('android.accessTitle')}
+              </div>
+              <div className="font-medium">{androidAccessIssue.message}</div>
+              <div className="text-[11px] opacity-90">{androidAccessIssue.explanation}</div>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {androidAccessIssue.canRetry && androidAccessIssue.retryAction && (
+              <button
+                type="button"
+                onClick={() => {
+                  const retry = androidAccessIssue.retryAction;
+                  clearAndroidAccessIssue();
+                  void retry?.();
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded bg-blue-600 text-white hover:bg-blue-500 whitespace-nowrap"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                {androidAccessIssue.id.startsWith('android_saf_revoked')
+                  ? t('android.reconnectFolderBtn')
+                  : t('android.retryAccess')}
+              </button>
+            )}
+            {androidAccessIssue.canOpenSettings && (
+              <button
+                type="button"
+                onClick={() => void openAndroidAppSettings()}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded border border-amber-600/30 bg-white/80 text-slate-900 hover:bg-white dark:border-white/15 dark:bg-[#121823] dark:text-slate-100 dark:hover:bg-white/10 whitespace-nowrap"
+              >
+                <Settings className="w-3.5 h-3.5" />
+                {t('android.openSettings')}
+              </button>
+            )}
+            <button
+              type="button"
+              aria-label={t('common.close')}
+              onClick={clearAndroidAccessIssue}
+              className="p-1.5 rounded hover:bg-black/10 dark:hover:bg-white/10"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {!isLoaded ? (
         <div className="flex-1 flex items-center justify-center text-xs text-slate-500 dark:text-slate-400">
           {t('app.loading')}
@@ -1227,6 +1525,8 @@ export default function App() {
           onImportFiles={handleImportProjectFile}
           onExportProjectZip={handleExportProjectZip}
           onDuplicateProject={handleDuplicateProject}
+          onRenameProject={handleRenameProject}
+          onBackupProject={handleQuickBackupProject}
           onDeleteProject={handleDeleteProject}
           onLoadStarterSample={handleLoadStarterSample}
         />
@@ -1275,6 +1575,7 @@ export default function App() {
           defaultTarget={settings.defaultTargetPlatform}
           lastBuild={lastBuild}
           buildHistory={buildHistory}
+          onSaveBeforeExport={handleSaveBeforeExport}
           onBeforeBuildBackup={
             settings.autoBackupOnBuild ? handleBeforeBuildBackup : undefined
           }

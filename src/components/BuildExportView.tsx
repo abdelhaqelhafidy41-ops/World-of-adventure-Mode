@@ -31,6 +31,11 @@ import {
 import { serializeManifest } from '@/src/core/project/modScaffolder';
 import { useI18n } from '@/src/i18n';
 import {
+  AndroidAccessDeniedError,
+  getPlatformAdapter,
+  reportAndroidAccessError,
+} from '@/src/platform';
+import {
   BuildHistoryEntry,
   BuildReport,
   ModProject,
@@ -44,6 +49,7 @@ interface BuildExportViewProps {
   defaultTarget: TargetPlatform;
   lastBuild: BuildReport | null;
   buildHistory?: BuildHistoryEntry[];
+  onSaveBeforeExport?: () => Promise<void>;
   onBeforeBuildBackup?: () => Promise<void>;
   onBuildComplete: (report: BuildReport, recordInHistory?: boolean) => void;
   onInspectIssue?: (issue: ValidationIssue) => void;
@@ -69,6 +75,7 @@ export const BuildExportView: React.FC<BuildExportViewProps> = ({
   defaultTarget,
   lastBuild,
   buildHistory = [],
+  onSaveBeforeExport,
   onBeforeBuildBackup,
   onBuildComplete,
   onInspectIssue,
@@ -81,6 +88,14 @@ export const BuildExportView: React.FC<BuildExportViewProps> = ({
   const [inspectorTab, setInspectorTab] = useState<BuildInspectorTab>('pipeline');
   const [pendingWarningReport, setPendingWarningReport] =
     useState<BuildReport | null>(null);
+  const [pendingConflict, setPendingConflict] = useState<{
+    blob: Blob;
+    existingName: string;
+    suggestedName: string;
+    confirmWarnings: boolean;
+    report: BuildReport;
+  } | null>(null);
+  const [conflictNewName, setConflictNewName] = useState('');
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
 
   const onBeforeBuildBackupRef = useRef(onBeforeBuildBackup);
@@ -156,10 +171,56 @@ export const BuildExportView: React.FC<BuildExportViewProps> = ({
     void runBuild(false);
   }, [runBuild]);
 
-  const executeExport = async (confirmWarnings: boolean, promptSaveDialog = true) => {
+  const finalizeSavedExport = (
+    saveResult: Awaited<ReturnType<typeof saveExportedPackage>>,
+    filename: string,
+    blobSize: number,
+    report: BuildReport,
+    confirmWarnings: boolean
+  ) => {
+    const noticeText =
+      saveResult.directoryLabel && saveResult.fileName
+        ? t('build.exportLocationConfirmed', {
+            file: saveResult.fileName,
+            directory: saveResult.directoryLabel,
+          })
+        : saveResult.locationLabel || filename;
+    setSavedNotice(noticeText);
+    onLog(
+      confirmWarnings ? 'warn' : 'success',
+      'Exporter',
+      confirmWarnings
+        ? t('app.logExportedWarnings', {
+            filename: saveResult.fileName || filename,
+            size: formatByteSize(blobSize),
+            count: report.warnings.length,
+          })
+        : t('app.logExportedVerified', {
+            filename: saveResult.fileName || filename,
+            size: formatByteSize(blobSize),
+          })
+    );
+    if (saveResult.locationLabel && saveResult.locationLabel !== filename) {
+      onLog(
+        'info',
+        'Exporter',
+        t('build.savedToLocation', { location: saveResult.locationLabel })
+      );
+    }
+  };
+
+  const executeExport = async (
+    confirmWarnings: boolean,
+    promptSaveDialog = false,
+    conflictResolution: 'ask' | 'replace' | 'rename' = 'ask'
+  ) => {
     setIsExporting(true);
     setSavedNotice(null);
     try {
+      if (onSaveBeforeExport) {
+        await onSaveBeforeExport();
+      }
+      await getPlatformAdapter().ensureFirstTimeStorageSetup?.();
       if (onBeforeBuildBackup) {
         await onBeforeBuildBackup();
       }
@@ -175,32 +236,25 @@ export const BuildExportView: React.FC<BuildExportViewProps> = ({
       setPendingWarningReport(null);
       const saveResult = await saveExportedPackage(blob, filename, {
         promptSaveDialog,
+        subdir: 'Exports',
+        conflictResolution,
       });
       if (saveResult.cancelled) {
         return;
       }
-      setSavedNotice(saveResult.locationLabel);
-      onLog(
-        confirmWarnings ? 'warn' : 'success',
-        'Exporter',
-        confirmWarnings
-          ? t('app.logExportedWarnings', {
-              filename,
-              size: formatByteSize(blob.size),
-              count: report.warnings.length,
-            })
-          : t('app.logExportedVerified', {
-              filename,
-              size: formatByteSize(blob.size),
-            })
-      );
-      if (saveResult.locationLabel && saveResult.locationLabel !== filename) {
-        onLog(
-          'info',
-          'Exporter',
-          t('build.savedToLocation', { location: saveResult.locationLabel })
-        );
+      if (saveResult.conflict) {
+        const suggested = saveResult.suggestedName || filename;
+        setConflictNewName(suggested);
+        setPendingConflict({
+          blob,
+          existingName: saveResult.existingName || filename,
+          suggestedName: suggested,
+          confirmWarnings,
+          report,
+        });
+        return;
       }
+      finalizeSavedExport(saveResult, filename, blob.size, report, confirmWarnings);
     } catch (err) {
       if (err instanceof ExportBlockedError) {
         onBuildComplete(err.report);
@@ -209,6 +263,13 @@ export const BuildExportView: React.FC<BuildExportViewProps> = ({
         onBuildComplete(err.report);
         setPendingWarningReport(err.report);
       } else {
+        if (err instanceof AndroidAccessDeniedError) {
+          reportAndroidAccessError(err.operation, err, {
+            permanentlyDenied: err.permanentlyDenied,
+            retryAction: () =>
+              void executeExport(confirmWarnings, promptSaveDialog, conflictResolution),
+          });
+        }
         onLog(
           'error',
           'Exporter',
@@ -220,15 +281,70 @@ export const BuildExportView: React.FC<BuildExportViewProps> = ({
     }
   };
 
+  const handleResolveConflict = async (mode: 'replace' | 'rename') => {
+    if (!pendingConflict) return;
+    setIsExporting(true);
+    try {
+      const requestedName =
+        mode === 'replace'
+          ? pendingConflict.existingName
+          : (conflictNewName.trim() || pendingConflict.suggestedName);
+      const ensuredName = /\.woamod$/i.test(requestedName)
+        ? requestedName
+        : `${requestedName}.woamod`;
+      const saveResult = await saveExportedPackage(pendingConflict.blob, ensuredName, {
+        promptSaveDialog: false,
+        subdir: 'Exports',
+        conflictResolution: mode,
+      });
+      if (saveResult.conflict) {
+        const nextSuggested = saveResult.suggestedName || ensuredName;
+        setConflictNewName(nextSuggested);
+        setPendingConflict({
+          ...pendingConflict,
+          existingName: ensuredName,
+          suggestedName: nextSuggested,
+        });
+        return;
+      }
+      if (!saveResult.cancelled && saveResult.saved) {
+        finalizeSavedExport(
+          saveResult,
+          ensuredName,
+          pendingConflict.blob.size,
+          pendingConflict.report,
+          pendingConflict.confirmWarnings
+        );
+      }
+      setPendingConflict(null);
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   const handleExportManifestOnly = async () => {
     const blob = new Blob([serializeManifest(project.manifest)], {
       type: 'application/json',
     });
-    const res = await saveExportedPackage(blob, 'mod.manifest.json', {
-      promptSaveDialog: true,
-    });
-    if (!res.cancelled) {
-      onLog('info', 'Exporter', t('app.logDownloadedManifest'));
+    try {
+      const res = await saveExportedPackage(blob, 'mod.manifest.json', {
+        promptSaveDialog: true,
+      });
+      if (!res.cancelled) {
+        onLog('info', 'Exporter', t('app.logDownloadedManifest'));
+      }
+    } catch (err) {
+      if (err instanceof AndroidAccessDeniedError) {
+        reportAndroidAccessError(err.operation, err, {
+          permanentlyDenied: err.permanentlyDenied,
+          retryAction: () => void handleExportManifestOnly(),
+        });
+      }
+      onLog(
+        'error',
+        'Exporter',
+        err instanceof Error ? err.message : t('build.exportFailed')
+      );
     }
   };
 
@@ -265,11 +381,25 @@ export const BuildExportView: React.FC<BuildExportViewProps> = ({
       type: 'application/json',
     });
     const reportName = lastBuild.packageFileName.replace(/\.woamod$/i, '.build-report.json');
-    const res = await saveExportedPackage(reportBlob, reportName, {
-      promptSaveDialog: true,
-    });
-    if (!res.cancelled) {
-      onLog('info', 'Builder', t('app.logDownloadedReport', { name: reportName }));
+    try {
+      const res = await saveExportedPackage(reportBlob, reportName, {
+        promptSaveDialog: true,
+      });
+      if (!res.cancelled) {
+        onLog('info', 'Builder', t('app.logDownloadedReport', { name: reportName }));
+      }
+    } catch (err) {
+      if (err instanceof AndroidAccessDeniedError) {
+        reportAndroidAccessError(err.operation, err, {
+          permanentlyDenied: err.permanentlyDenied,
+          retryAction: () => void handleDownloadBuildReport(),
+        });
+      }
+      onLog(
+        'error',
+        'Builder',
+        err instanceof Error ? err.message : t('build.exportFailed')
+      );
     }
   };
 
@@ -347,7 +477,7 @@ export const BuildExportView: React.FC<BuildExportViewProps> = ({
             <button
               type="button"
               disabled={isExporting || isBuilding || exportBlocked}
-              onClick={() => void executeExport(false)}
+              onClick={() => void executeExport(false, false, 'ask')}
               title={
                 exportBlocked
                   ? t('build.exportBlockedTooltip', { count: errorCount })
@@ -366,13 +496,22 @@ export const BuildExportView: React.FC<BuildExportViewProps> = ({
                   ? t('build.exportBlockedErrors', { count: errorCount })
                   : t('build.exportNamedBtn', { filename: displayFilename })}
             </button>
+
+            <button
+              type="button"
+              disabled={isExporting || isBuilding || exportBlocked}
+              onClick={() => void executeExport(false, true, 'replace')}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium rounded-md border border-slate-300 bg-white text-slate-800 hover:bg-slate-50 dark:border-white/15 dark:bg-[#121823] dark:text-slate-100 dark:hover:bg-white/5 transition-colors whitespace-nowrap shrink-0 min-h-[38px] disabled:opacity-50"
+            >
+              {t('build.saveAsBtn')}
+            </button>
           </div>
         </div>
 
         {savedNotice && (
           <div className="px-4 py-2.5 rounded-lg border border-blue-500/30 bg-blue-500/10 text-xs text-blue-800 dark:text-blue-200 flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 text-blue-500 shrink-0" />
-            <span dir="auto">{t('build.savedToLocation', { location: savedNotice })}</span>
+            <span dir="auto">{savedNotice}</span>
           </div>
         )}
 
@@ -990,13 +1129,76 @@ export const BuildExportView: React.FC<BuildExportViewProps> = ({
               <button
                 type="button"
                 disabled={isExporting}
-                onClick={() => void executeExport(true)}
+                onClick={() => void executeExport(true, false, 'ask')}
                 className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-md bg-amber-600 text-white hover:bg-amber-500 transition-colors whitespace-nowrap shrink-0 disabled:opacity-60"
               >
                 <Download className="w-3.5 h-3.5" />
                 {isExporting
                   ? t('build.exportingBtn')
                   : t('build.exportNamedBtn', { filename: pendingWarningReport.packageFileName })}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Duplicate Export Conflict Modal */}
+      {pendingConflict && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white dark:border-white/10 dark:bg-[#121823] overflow-hidden shadow-xl">
+            <div className="px-5 py-4 border-b border-slate-200 dark:border-white/10 flex items-center gap-2.5">
+              <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0" />
+              <h3 className="font-display text-sm font-semibold text-slate-900 dark:text-slate-100">
+                {t('build.exportConflictTitle')}
+              </h3>
+            </div>
+            <div className="p-5 space-y-4 text-xs">
+              <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
+                {t('build.exportConflictDesc', {
+                  filename: pendingConflict.existingName,
+                })}
+              </p>
+              <div>
+                <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1.5">
+                  {t('build.newFilenameLabel')}
+                </label>
+                <input
+                  type="text"
+                  dir="ltr"
+                  value={conflictNewName}
+                  onChange={(e) => setConflictNewName(e.target.value)}
+                  className="w-full px-3 py-2 font-mono rounded-md border border-slate-300 bg-white text-slate-900 dark:border-white/10 dark:bg-[#0B0F17] dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+            </div>
+            <div className="px-5 py-3.5 border-t border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-[#0E131D] flex flex-wrap items-center justify-end gap-2">
+              <button
+                type="button"
+                disabled={isExporting}
+                onClick={() => setPendingConflict(null)}
+                className="px-3.5 py-1.5 text-xs font-medium rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 dark:border-white/15 dark:bg-[#121823] dark:text-slate-200 dark:hover:bg-white/5"
+              >
+                {t('common.cancel')}
+              </button>
+              <button
+                type="button"
+                disabled={isExporting}
+                onClick={() => void handleResolveConflict('replace')}
+                className="px-3.5 py-1.5 text-xs font-medium rounded-md border border-amber-500/40 bg-amber-500/15 text-amber-800 hover:bg-amber-500/25 dark:text-amber-200"
+              >
+                {t('build.replaceExistingBtn')}
+              </button>
+              <button
+                type="button"
+                disabled={isExporting}
+                onClick={() => void handleResolveConflict('rename')}
+                className="px-3.5 py-1.5 text-xs font-semibold rounded-md bg-blue-600 text-white hover:bg-blue-500"
+              >
+                {t('build.saveNewFilenameBtn')}
               </button>
             </div>
           </div>

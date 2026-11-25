@@ -9,6 +9,33 @@ import { WebPlatformAdapter } from './webAdapter';
 
 export * from './types';
 export {
+  APP_ROOT_FOLDER_NAME,
+  AndroidAccessDeniedError,
+  checkAndroidDirectoryAccess,
+  clearAndroidAccessIssue,
+  classifyAndroidNativeError,
+  createDefaultStorageConfig,
+  detectAndroidStorageCapabilities,
+  doesOperationRequireRuntimePermission,
+  ensureAndroidOperationAccess,
+  formatBackupTimestampFolder,
+  generateUniqueFilename,
+  getAndroidAccessStatus,
+  getCurrentAndroidAccessIssue,
+  openAndroidAppSettings,
+  parseScopedBlobKey,
+  reportAndroidAccessError,
+  reportAndroidSafRevoked,
+  sanitizeFolderSegment,
+  subscribeAndroidAccessIssue,
+  type AndroidAccessIssue,
+  type AndroidAccessOperation,
+  type AndroidNativeErrorCode,
+  type AndroidStorageAccessStatus,
+  type AndroidStorageCapabilities,
+  type AndroidStorageCapabilityTier,
+} from './androidAccessManager';
+export {
   detectFormFactor,
   detectIsTouchPrimary,
   detectRuntimePlatform,

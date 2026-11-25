@@ -1,8 +1,10 @@
 import React, { useRef, useState } from 'react';
 import {
   AlertTriangle,
+  Archive,
   Copy,
   Download,
+  Edit3,
   FolderOpen,
   MoreVertical,
   Plus,
@@ -12,8 +14,14 @@ import {
   Upload,
 } from 'lucide-react';
 import { ContextMenu, ContextMenuItem } from '@/src/components/common/ContextMenu';
+import { validateModId } from '@/src/core/validation/modValidator';
 import { useI18n } from '@/src/i18n';
-import { getPlatformAdapter, usePlatform } from '@/src/platform';
+import {
+  AndroidAccessDeniedError,
+  getPlatformAdapter,
+  reportAndroidAccessError,
+  usePlatform,
+} from '@/src/platform';
 import { ModProject } from '@/src/types/mod';
 
 interface ProjectManagerViewProps {
@@ -24,6 +32,12 @@ interface ProjectManagerViewProps {
   onImportFiles: (file: File) => Promise<void>;
   onExportProjectZip: (project: ModProject) => Promise<void>;
   onDuplicateProject: (project: ModProject) => void;
+  onRenameProject?: (
+    project: ModProject,
+    newName: string,
+    newModId: string
+  ) => Promise<void> | void;
+  onBackupProject?: (project: ModProject) => Promise<void> | void;
   onDeleteProject: (modId: string) => void;
   onLoadStarterSample: () => void;
 }
@@ -36,6 +50,8 @@ export const ProjectManagerView: React.FC<ProjectManagerViewProps> = ({
   onImportFiles,
   onExportProjectZip,
   onDuplicateProject,
+  onRenameProject,
+  onBackupProject,
   onDeleteProject,
   onLoadStarterSample,
 }) => {
@@ -47,6 +63,11 @@ export const ProjectManagerView: React.FC<ProjectManagerViewProps> = ({
   const [dragActive, setDragActive] = useState(false);
   const [confirmDeleteProject, setConfirmDeleteProject] =
     useState<ModProject | null>(null);
+  const [renameTarget, setRenameTarget] = useState<ModProject | null>(null);
+  const [renameName, setRenameName] = useState('');
+  const [renameModId, setRenameModId] = useState('');
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{
     project: ModProject;
     x: number;
@@ -97,6 +118,12 @@ export const ProjectManagerView: React.FC<ProjectManagerViewProps> = ({
         }
         return;
       } catch (err) {
+        if (err instanceof AndroidAccessDeniedError) {
+          reportAndroidAccessError(err.operation, err, {
+            permanentlyDenied: err.permanentlyDenied,
+            retryAction: () => void handleImportClick(),
+          });
+        }
         setImportError(
           err instanceof Error ? err.message : t('projects.openError')
         );
@@ -134,6 +161,47 @@ export const ProjectManagerView: React.FC<ProjectManagerViewProps> = ({
     return translated === key ? cat : translated;
   };
 
+  const openRenameDialog = (proj: ModProject) => {
+    setRenameTarget(proj);
+    setRenameName(proj.manifest.name);
+    setRenameModId(proj.manifest.modId);
+    setRenameError(null);
+  };
+
+  const handleConfirmRename = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!renameTarget || !onRenameProject) return;
+    const cleanName = renameName.trim();
+    const cleanModId = renameModId.trim();
+    if (!cleanName) {
+      setRenameError(t('val.nameRequired'));
+      return;
+    }
+    const modIdErr = validateModId(cleanModId);
+    if (modIdErr) {
+      setRenameError(modIdErr);
+      return;
+    }
+    if (
+      cleanModId !== renameTarget.manifest.modId &&
+      projects.some((p) => p.id !== renameTarget.id && p.manifest.modId === cleanModId)
+    ) {
+      setRenameError(t('createMod.errDuplicateId', { modId: cleanModId }));
+      return;
+    }
+    await onRenameProject(renameTarget, cleanName, cleanModId);
+    setRenameTarget(null);
+    setActionNotice(
+      t('app.renamedProject', { name: cleanName, modId: cleanModId })
+    );
+  };
+
+  const handleTriggerBackup = async (proj: ModProject) => {
+    if (!onBackupProject) return;
+    await onBackupProject(proj);
+    setActionNotice(t('app.backupCreatedNotice', { name: proj.manifest.name }));
+  };
+
   const buildMenuItems = (proj: ModProject): ContextMenuItem[] => {
     const items: ContextMenuItem[] = [
       {
@@ -142,6 +210,26 @@ export const ProjectManagerView: React.FC<ProjectManagerViewProps> = ({
         icon: <FolderOpen className="w-3.5 h-3.5" />,
         onSelect: () => onOpenProject(proj),
       },
+      ...(onRenameProject
+        ? [
+            {
+              id: 'rename',
+              label: t('projects.renameBtn'),
+              icon: <Edit3 className="w-3.5 h-3.5" />,
+              onSelect: () => openRenameDialog(proj),
+            },
+          ]
+        : []),
+      ...(onBackupProject
+        ? [
+            {
+              id: 'backup',
+              label: t('projects.backupBtn'),
+              icon: <Archive className="w-3.5 h-3.5" />,
+              onSelect: () => void handleTriggerBackup(proj),
+            },
+          ]
+        : []),
       {
         id: 'export',
         label: t('ctx.exportZip'),
@@ -164,7 +252,7 @@ export const ProjectManagerView: React.FC<ProjectManagerViewProps> = ({
           void getPlatformAdapter()
             .getStorageInfo()
             .then((info) => {
-              const targetPath = `${info.subdirectories.Projects}/${proj.id}.woaproj.json`;
+              const targetPath = `${info.subdirectories.Projects}/${proj.id}/.woa-project.json`;
               return window.woaDesktop?.showItemInFolder(targetPath);
             });
         },
@@ -248,6 +336,19 @@ export const ProjectManagerView: React.FC<ProjectManagerViewProps> = ({
         {importError && (
           <div className="px-4 py-3 rounded-md border border-red-500/30 bg-red-500/10 text-xs text-red-600 dark:text-red-300">
             {importError}
+          </div>
+        )}
+
+        {actionNotice && (
+          <div className="px-4 py-2.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 text-xs text-emerald-700 dark:text-emerald-300 flex items-center justify-between gap-2">
+            <span dir="auto">{actionNotice}</span>
+            <button
+              type="button"
+              onClick={() => setActionNotice(null)}
+              className="text-[11px] underline opacity-80 hover:opacity-100"
+            >
+              {t('common.close')}
+            </button>
           </div>
         )}
 
@@ -367,6 +468,12 @@ export const ProjectManagerView: React.FC<ProjectManagerViewProps> = ({
 
                       <div className="text-xs text-slate-500 dark:text-slate-400 flex flex-wrap items-center justify-between gap-2">
                         <span className="truncate">
+                          <span dir="ltr" className="font-mono text-[11px]">
+                            {t('projects.gameVerBadge', {
+                              version: proj.manifest.supportedGameVersion,
+                            })}
+                          </span>{' '}
+                          ·{' '}
                           {proj.manifest.categories
                             .map((c) => translateCategory(c))
                             .join(' · ')}
@@ -384,6 +491,28 @@ export const ProjectManagerView: React.FC<ProjectManagerViewProps> = ({
                         >
                           {t('projects.openAction')}
                         </button>
+                        {onRenameProject && (
+                          <button
+                            type="button"
+                            onClick={() => openRenameDialog(proj)}
+                            title={t('projects.renameBtn')}
+                            aria-label={t('projects.renameBtn')}
+                            className="p-2 rounded-md border border-slate-200 dark:border-white/10 text-slate-600 dark:text-slate-300 min-h-[40px] min-w-[40px] flex items-center justify-center"
+                          >
+                            <Edit3 className="w-4 h-4" />
+                          </button>
+                        )}
+                        {onBackupProject && (
+                          <button
+                            type="button"
+                            onClick={() => void handleTriggerBackup(proj)}
+                            title={t('projects.backupBtn')}
+                            aria-label={t('projects.backupBtn')}
+                            className="p-2 rounded-md border border-slate-200 dark:border-white/10 text-slate-600 dark:text-slate-300 min-h-[40px] min-w-[40px] flex items-center justify-center"
+                          >
+                            <Archive className="w-4 h-4" />
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => void onExportProjectZip(proj)}
@@ -490,6 +619,28 @@ export const ProjectManagerView: React.FC<ProjectManagerViewProps> = ({
                                 >
                                   {t('projects.openAction')}
                                 </button>
+                                {onRenameProject && (
+                                  <button
+                                    type="button"
+                                    onClick={() => openRenameDialog(proj)}
+                                    title={t('projects.renameBtn')}
+                                    aria-label={t('projects.renameBtn')}
+                                    className="p-1.5 rounded-md text-slate-500 hover:text-slate-900 hover:bg-slate-100 dark:text-slate-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors"
+                                  >
+                                    <Edit3 className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                                {onBackupProject && (
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleTriggerBackup(proj)}
+                                    title={t('projects.backupBtn')}
+                                    aria-label={t('projects.backupBtn')}
+                                    className="p-1.5 rounded-md text-slate-500 hover:text-slate-900 hover:bg-slate-100 dark:text-slate-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors"
+                                  >
+                                    <Archive className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
                                 <button
                                   type="button"
                                   onClick={() => void onExportProjectZip(proj)}
@@ -538,6 +689,72 @@ export const ProjectManagerView: React.FC<ProjectManagerViewProps> = ({
         items={contextMenu ? buildMenuItems(contextMenu.project) : []}
         onClose={() => setContextMenu(null)}
       />
+
+      {renameTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <form
+            onSubmit={(e) => void handleConfirmRename(e)}
+            className="w-full max-w-md rounded-lg border border-slate-200 bg-white dark:border-white/10 dark:bg-[#121823] overflow-hidden shadow-xl"
+          >
+            <div className="px-5 py-4 border-b border-slate-200 dark:border-white/10 flex items-center gap-2.5">
+              <Edit3 className="w-4 h-4 text-blue-500 shrink-0" />
+              <h3 className="font-display text-sm font-semibold text-slate-900 dark:text-slate-100">
+                {t('projects.renameTitle')}
+              </h3>
+            </div>
+            <div className="p-5 space-y-4 text-xs">
+              {renameError && (
+                <div className="px-3 py-2 rounded border border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-300">
+                  {renameError}
+                </div>
+              )}
+              <div>
+                <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1.5">
+                  {t('projects.renameNameLabel')}
+                </label>
+                <input
+                  type="text"
+                  dir="auto"
+                  value={renameName}
+                  onChange={(e) => setRenameName(e.target.value)}
+                  className="w-full px-3 py-2 rounded-md border border-slate-300 bg-white text-slate-900 dark:border-white/10 dark:bg-[#0B0F17] dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1.5">
+                  {t('projects.renameModIdLabel')}
+                </label>
+                <input
+                  type="text"
+                  dir="ltr"
+                  value={renameModId}
+                  onChange={(e) => setRenameModId(e.target.value)}
+                  className="w-full px-3 py-2 font-mono rounded-md border border-slate-300 bg-white text-slate-900 dark:border-white/10 dark:bg-[#0B0F17] dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+            </div>
+            <div className="px-5 py-3 border-t border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-[#0E131D] flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setRenameTarget(null)}
+                className="px-3.5 py-1.5 text-xs font-medium rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 dark:border-white/15 dark:bg-[#121823] dark:text-slate-200 dark:hover:bg-white/5"
+              >
+                {t('common.cancel')}
+              </button>
+              <button
+                type="submit"
+                className="px-3.5 py-1.5 text-xs font-semibold rounded-md bg-blue-600 text-white hover:bg-blue-500"
+              >
+                {t('common.save')}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {confirmDeleteProject && (
         <div

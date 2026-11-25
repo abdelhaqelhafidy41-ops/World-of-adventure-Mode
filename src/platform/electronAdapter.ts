@@ -4,12 +4,15 @@ import type {
   ProjectBackupRecord,
 } from '@/src/types/mod';
 import {
+  DedicatedFolderEntry,
   PickDirectoryResult,
   PickFilesOptions,
   PlatformBridge,
   SaveExportOptions,
   SaveExportResult,
   STORAGE_SUBDIRS,
+  StorageAccessCheckResult,
+  StorageConfig,
   StorageLocationInfo,
   StorageSubdir,
 } from './types';
@@ -30,6 +33,21 @@ export class ElectronWindowsAdapter implements PlatformBridge {
 
   async ensureStorageDirectories(): Promise<StorageLocationInfo> {
     return getBridge().ensureStorageDirectories();
+  }
+
+  async checkStorageFolderAccess(): Promise<StorageAccessCheckResult> {
+    const info = await this.ensureStorageDirectories();
+    return {
+      valid: true,
+      revoked: false,
+      mode: info.mode,
+      rootPath: info.rootPath,
+    };
+  }
+
+  async ensureFirstTimeStorageSetup(): Promise<boolean> {
+    await this.ensureStorageDirectories();
+    return true;
   }
 
   async pickImportFiles(options?: PickFilesOptions): Promise<File[]> {
@@ -60,15 +78,40 @@ export class ElectronWindowsAdapter implements PlatformBridge {
       fileName: options.fileName,
       data: new Uint8Array(buffer),
       promptDialog: options.promptSaveDialog,
+      subdir: options.subdir,
+      conflictResolution: options.conflictResolution,
     });
     if (res.cancelled) {
       return { saved: false, cancelled: true, locationLabel: '' };
     }
+    if (res.conflict) {
+      return {
+        saved: false,
+        conflict: true,
+        existingName: res.existingName || options.fileName,
+        suggestedName: res.suggestedName || options.fileName,
+        locationLabel: res.locationLabel || options.fileName,
+        directoryLabel: res.directoryLabel,
+      };
+    }
     return {
       saved: res.saved,
       filePath: res.filePath,
-      locationLabel: res.filePath || options.fileName,
+      fileName: res.fileName || options.fileName,
+      directoryLabel: res.directoryLabel,
+      locationLabel: res.locationLabel || res.filePath || options.fileName,
     };
+  }
+
+  async exportFileExists(fileName: string, subdir?: StorageSubdir): Promise<boolean> {
+    return (await getBridge().exportFileExists?.(fileName, subdir)) ?? false;
+  }
+
+  async listSubdirEntries(
+    subdir: StorageSubdir,
+    relativePath?: string
+  ): Promise<DedicatedFolderEntry[]> {
+    return (await getBridge().listSubdirEntries?.(subdir, relativePath)) ?? [];
   }
 
   async openStorageFolder(subdir?: StorageSubdir): Promise<boolean> {
@@ -77,6 +120,18 @@ export class ElectronWindowsAdapter implements PlatformBridge {
 
   async syncSaveProject(project: ModProject): Promise<void> {
     await getBridge().writeProject(project);
+  }
+
+  async syncRenameProject(oldModId: string, project: ModProject): Promise<void> {
+    const bridge = getBridge();
+    if (bridge.renameProject) {
+      await bridge.renameProject(oldModId, project);
+    } else {
+      await bridge.writeProject(project);
+      if (oldModId && oldModId !== project.id) {
+        await bridge.deleteProject(oldModId);
+      }
+    }
   }
 
   async syncDeleteProject(modId: string): Promise<void> {
@@ -139,6 +194,18 @@ export class ElectronWindowsAdapter implements PlatformBridge {
       return null;
     }
   }
+
+  async syncSaveStorageConfig(config: StorageConfig): Promise<void> {
+    await getBridge().writeStorageConfig?.(config);
+  }
+
+  async syncLoadStorageConfig(): Promise<StorageConfig | null> {
+    try {
+      return (await getBridge().readStorageConfig?.()) ?? null;
+    } catch {
+      return null;
+    }
+  }
 }
 
 export function buildFallbackWindowsStorageInfo(): StorageLocationInfo {
@@ -151,6 +218,8 @@ export function buildFallbackWindowsStorageInfo(): StorageLocationInfo {
     platform: 'windows',
     rootPath: root,
     mode: 'native-documents',
+    folderAccessValid: true,
+    folderAccessRevoked: false,
     subdirectories,
   };
 }

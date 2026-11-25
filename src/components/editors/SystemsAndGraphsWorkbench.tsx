@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Archive,
   BookOpen,
@@ -21,6 +21,7 @@ import {
   Sparkles,
   Trash2,
   Unlink,
+  Upload,
 } from 'lucide-react';
 import { AnyWorkbenchKind } from '@/src/components/content/ContentEditorsWorkbench';
 import {
@@ -29,7 +30,10 @@ import {
   WOA_MOD_API_VERSION,
   WOA_PACKAGE_FORMAT_VERSION,
 } from '@/src/core/api/woaModApiSpec';
-import { triggerBlobDownload } from '@/src/core/builder/modBuilder';
+import {
+  parseBackupRecordFile,
+  triggerBlobDownload,
+} from '@/src/core/builder/modBuilder';
 import {
   extractObjectPart,
   resolveProjectContents,
@@ -39,6 +43,12 @@ import {
   generateModMarkdownDocs,
 } from '@/src/core/docs/modDocGenerator';
 import { useI18n } from '@/src/i18n';
+import {
+  AndroidAccessDeniedError,
+  getPlatformAdapter,
+  reportAndroidAccessError,
+  usePlatform,
+} from '@/src/platform';
 import {
   ModAsset,
   ModContentDatabase,
@@ -264,6 +274,7 @@ export const SystemsAndGraphsWorkbench: React.FC<SystemsAndGraphsWorkbenchProps>
   onLog,
 }) => {
   const { t } = useI18n();
+  const platformInfo = usePlatform();
   const [subTab, setSubTab] = useState<SystemsSubTab>('quest-graph');
 
   const contents = useMemo(() => resolveProjectContents(project), [project]);
@@ -675,6 +686,61 @@ export const SystemsAndGraphsWorkbench: React.FC<SystemsAndGraphsWorkbenchProps>
   const [docsCopied, setDocsCopied] = useState(false);
   const [isCreatingBackup, setIsCreatingBackup] = useState(false);
   const [isExportingZip, setIsExportingZip] = useState(false);
+  const [isRestoringFile, setIsRestoringFile] = useState(false);
+  const [restoreFileError, setRestoreFileError] = useState<string | null>(null);
+  const restoreFileInputRef = useRef<HTMLInputElement>(null);
+
+  const processRestoreBackupFile = async (file: File) => {
+    setRestoreFileError(null);
+    setIsRestoringFile(true);
+    try {
+      const record = await parseBackupRecordFile(file);
+      await onRestoreBackup(record);
+      onLog(
+        'success',
+        'Backup',
+        t('systems.backupRestoredFromFile', { name: record.modName })
+      );
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      setRestoreFileError(t('systems.backupRestoreFailed', { error: detail }));
+      onLog(
+        'error',
+        'Backup',
+        t('systems.backupRestoreFailed', { error: detail })
+      );
+    } finally {
+      setIsRestoringFile(false);
+    }
+  };
+
+  const handleRestoreFromFileClick = async () => {
+    setRestoreFileError(null);
+    if (platformInfo.platform !== 'web') {
+      try {
+        const picked = await getPlatformAdapter().pickImportFiles({
+          title: t('systems.restoreFromFileBtn'),
+          accept: ['.woabackup.json', '.json'],
+          multiple: false,
+        });
+        if (picked.length > 0) {
+          await processRestoreBackupFile(picked[0]);
+        }
+        return;
+      } catch (err) {
+        if (err instanceof AndroidAccessDeniedError) {
+          reportAndroidAccessError(err.operation, err, {
+            permanentlyDenied: err.permanentlyDenied,
+            retryAction: () => void handleRestoreFromFileClick(),
+          });
+        }
+        const detail = err instanceof Error ? err.message : String(err);
+        setRestoreFileError(t('systems.backupRestoreFailed', { error: detail }));
+        return;
+      }
+    }
+    restoreFileInputRef.current?.click();
+  };
 
   const generatedMarkdown = useMemo(() => generateModMarkdownDocs(project), [project]);
 
@@ -2015,25 +2081,54 @@ export const SystemsAndGraphsWorkbench: React.FC<SystemsAndGraphsWorkbenchProps>
                   </p>
                 </div>
 
-                <button
-                  type="button"
-                  disabled={isExportingZip}
-                  onClick={async () => {
-                    setIsExportingZip(true);
-                    try {
-                      await onExportWorkspaceProject();
-                    } finally {
-                      setIsExportingZip(false);
-                    }
-                  }}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-50 whitespace-nowrap shrink-0"
-                >
-                  <Archive className="w-3.5 h-3.5" />
-                  {isExportingZip
-                    ? t('systems.exportingZip')
-                    : t('systems.exportProjZip')}
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={isRestoringFile}
+                    onClick={() => void handleRestoreFromFileClick()}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded border border-slate-300 bg-white text-slate-800 hover:bg-slate-50 dark:border-white/15 dark:bg-[#0B0F17] dark:text-slate-100 dark:hover:bg-white/5 disabled:opacity-50 whitespace-nowrap shrink-0"
+                  >
+                    <Upload className="w-3.5 h-3.5" />
+                    {t('systems.restoreFromFileBtn')}
+                  </button>
+                  <input
+                    ref={restoreFileInputRef}
+                    type="file"
+                    accept=".woabackup.json,.json"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      e.target.value = '';
+                      if (file) void processRestoreBackupFile(file);
+                    }}
+                    className="hidden"
+                  />
+
+                  <button
+                    type="button"
+                    disabled={isExportingZip}
+                    onClick={async () => {
+                      setIsExportingZip(true);
+                      try {
+                        await onExportWorkspaceProject();
+                      } finally {
+                        setIsExportingZip(false);
+                      }
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-50 whitespace-nowrap shrink-0"
+                  >
+                    <Archive className="w-3.5 h-3.5" />
+                    {isExportingZip
+                      ? t('systems.exportingZip')
+                      : t('systems.exportProjZip')}
+                  </button>
+                </div>
               </div>
+
+              {restoreFileError && (
+                <div className="px-3 py-2 rounded border border-red-500/30 bg-red-500/10 text-xs text-red-600 dark:text-red-300">
+                  {restoreFileError}
+                </div>
+              )}
 
               <div className="flex flex-col sm:flex-row gap-2">
                 <input

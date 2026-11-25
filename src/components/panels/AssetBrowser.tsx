@@ -25,7 +25,12 @@ import {
 import { ACCEPTED_ASSET_INPUT_EXTENSIONS } from '@/src/core/assets/assetPipeline';
 import { getAssetBlob } from '@/src/core/storage/modRepository';
 import { useI18n } from '@/src/i18n';
-import { getPlatformAdapter, usePlatform } from '@/src/platform';
+import {
+  AndroidAccessDeniedError,
+  getPlatformAdapter,
+  reportAndroidAccessError,
+  usePlatform,
+} from '@/src/platform';
 import { AssetPresetKind, ModAsset } from '@/src/types/mod';
 
 interface AssetBrowserProps {
@@ -205,6 +210,12 @@ export const AssetBrowser: React.FC<AssetBrowserProps> = ({
         }
         return;
       } catch (err) {
+        if (err instanceof AndroidAccessDeniedError) {
+          reportAndroidAccessError(err.operation, err, {
+            permanentlyDenied: err.permanentlyDenied,
+            retryAction: () => void handleImportButtonClick(),
+          });
+        }
         setImportError(err instanceof Error ? err.message : t('app.assetImportFailed', { error: '' }));
         return;
       }
@@ -253,6 +264,12 @@ export const AssetBrowser: React.FC<AssetBrowserProps> = ({
         }
         return;
       } catch (err) {
+        if (err instanceof AndroidAccessDeniedError) {
+          reportAndroidAccessError(err.operation, err, {
+            permanentlyDenied: err.permanentlyDenied,
+            retryAction: () => void triggerReplace(assetId),
+          });
+        }
         setImportError(err instanceof Error ? err.message : 'Unable to replace asset.');
         return;
       }

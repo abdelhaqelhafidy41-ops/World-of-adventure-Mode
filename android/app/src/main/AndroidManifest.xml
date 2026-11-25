@@ -35,11 +35,13 @@
         </provider>
     </application>
 
-    <!-- Minimal required permissions; SAF handles shared storage on modern Android -->
+    <!-- Minimal required permissions; Android 10+ and 13+ use SAF + app-private storage with zero runtime storage prompts -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Legacy storage fallback only for Android <= 12 (API <= 32); ignored on Android 13+ -->
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
+    <!-- Legacy external write fallback only for Android <= 10 (API <= 29); ignored on Android 11+ -->
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="29" />

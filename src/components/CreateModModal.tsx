@@ -2,10 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { FolderTree, X } from 'lucide-react';
 import {
   MOD_CATEGORIES,
-  SUPPORTED_GAME_VERSIONS,
   suggestModId,
   validateModId,
   validateSemver,
+  validateSupportedGameVersion,
 } from '@/src/core/project/modScaffolder';
 import { getLocalizedModTemplates } from '@/src/core/project/modTemplates';
 import { useI18n } from '@/src/i18n';
@@ -79,6 +79,8 @@ export const CreateModModal: React.FC<CreateModModalProps> = ({
     );
   };
 
+  const gameVersionValidation = validateSupportedGameVersion(supportedGameVersion);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) {
@@ -99,6 +101,10 @@ export const CreateModModal: React.FC<CreateModModalProps> = ({
       setError(verValidation);
       return;
     }
+    if (!gameVersionValidation.valid) {
+      setError(gameVersionValidation.error ?? t('createMod.errGameVersionFormat'));
+      return;
+    }
 
     onCreate({
       modId: modId.trim(),
@@ -108,7 +114,7 @@ export const CreateModModal: React.FC<CreateModModalProps> = ({
       author: author.trim() || t('createMod.defaultAuthorFallback'),
       description: description.trim(),
       descriptionAr: descriptionAr.trim() || undefined,
-      supportedGameVersion,
+      supportedGameVersion: supportedGameVersion.trim(),
       categories,
       templateId,
     });
@@ -300,20 +306,41 @@ export const CreateModModal: React.FC<CreateModModalProps> = ({
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
+                <label
+                  htmlFor="create-mod-game-version"
+                  className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5"
+                >
                   {t('createMod.gameVersionLabel')}
                 </label>
-                <select
+                <input
+                  id="create-mod-game-version"
+                  type="text"
+                  inputMode="decimal"
+                  required
+                  dir="ltr"
                   value={supportedGameVersion}
                   onChange={(e) => setSupportedGameVersion(e.target.value)}
-                  className="w-full px-3 py-2 text-sm rounded-md border border-slate-300 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-white/10 dark:bg-[#0B0F17] dark:text-slate-100"
-                >
-                  {SUPPORTED_GAME_VERSIONS.map((v) => (
-                    <option key={v} value={v}>
-                      {v}
-                    </option>
-                  ))}
-                </select>
+                  placeholder={t('createMod.gameVersionPlaceholder')}
+                  aria-invalid={!gameVersionValidation.valid}
+                  aria-describedby={
+                    !gameVersionValidation.valid
+                      ? 'create-mod-game-version-error'
+                      : undefined
+                  }
+                  className={`w-full px-3 py-2 text-sm font-mono tabular-nums rounded-md border bg-white text-slate-900 focus:outline-none focus:ring-2 dark:bg-[#0B0F17] dark:text-slate-100 ${
+                    gameVersionValidation.valid
+                      ? 'border-slate-300 focus:ring-blue-500 dark:border-white/10'
+                      : 'border-red-500 focus:ring-red-500 dark:border-red-500/70'
+                  }`}
+                />
+                {!gameVersionValidation.valid && (
+                  <p
+                    id="create-mod-game-version-error"
+                    className="mt-1 text-[11px] text-red-600 dark:text-red-400"
+                  >
+                    {gameVersionValidation.error}
+                  </p>
+                )}
               </div>
             </div>
 
@@ -397,7 +424,8 @@ export const CreateModModal: React.FC<CreateModModalProps> = ({
               </button>
               <button
                 type="submit"
-                className="px-4 py-2 text-xs font-semibold rounded-md bg-blue-600 text-white hover:bg-blue-500 transition-colors whitespace-nowrap shrink-0"
+                disabled={!gameVersionValidation.valid}
+                className="px-4 py-2 text-xs font-semibold rounded-md bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap shrink-0"
               >
                 {t('createMod.createBtn')}
               </button>

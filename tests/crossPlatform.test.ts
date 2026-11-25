@@ -21,7 +21,21 @@ import {
   stripPrototypePollution,
   validateZipArchiveLimits,
 } from '../src/core/security/importGuard';
-import { createStarterSampleProject } from '../src/core/project/modScaffolder';
+import {
+  DEFAULT_GAME_VERSION,
+  MIN_SUPPORTED_GAME_VERSION,
+  validateSupportedGameVersion,
+} from '../src/core/api/woaModApiSpec';
+import {
+  getAssetFormatSpec,
+  isSupportedAssetPath,
+  parseAndValidateWoa3dContent,
+  serializeWoa3dAsset,
+} from '../src/core/assets/assetPipeline';
+import {
+  createModProject,
+  createStarterSampleProject,
+} from '../src/core/project/modScaffolder';
 import {
   exportModArchiveBlob,
   importModFromFile,
@@ -323,6 +337,8 @@ test('importModFromFile rejects .woamod archives containing scripts/main.ts, arb
     { path: 'evil.js', content: 'alert(1)' },
     { path: 'payload.exe', content: 'MZ' },
     { path: 'native/lib.dll', content: 'MZ' },
+    { path: 'native/libmod.so', content: 'ELF' },
+    { path: 'tools/install.bat', content: '@echo off' },
     { path: 'run.sh', content: '#!/bin/sh\nid' },
   ];
 
@@ -342,4 +358,189 @@ test('importModFromFile rejects .woamod archives containing scripts/main.ts, arb
   const disguisedBlob = await disguisedZip.generateAsync({ type: 'blob' });
   const disguisedFile = new File([disguisedBlob], 'disguised.woamod', { type: 'application/octet-stream' });
   await assert.rejects(() => importModFromFile(disguisedFile), /Security violation|Blocked/i);
+});
+
+test('validateSupportedGameVersion enforces SemVer >= 1.1.24 with exact error messages', () => {
+  assert.equal(MIN_SUPPORTED_GAME_VERSION, '1.1.24');
+  assert.equal(DEFAULT_GAME_VERSION, '1.1.24');
+
+  for (const validVer of ['1.1.24', ' 1.1.24 ', '1.1.25', '1.2.0', '1.8.0', '1.9.0', '2.0.0', '2.0.0-preview', '3.4.5']) {
+    const res = validateSupportedGameVersion(validVer);
+    assert.equal(res.valid, true, `Expected ${validVer} to be valid`);
+  }
+
+  for (const lowVer of ['1.1.23', '1.1.0', '1.0.0', '0.9.9']) {
+    const res = validateSupportedGameVersion(lowVer);
+    assert.equal(res.valid, false, `Expected ${lowVer} to be rejected`);
+    assert.equal(res.code, 'below_minimum');
+    assert.equal(res.error, 'Game version must be 1.1.24 or higher.');
+  }
+
+  for (const badVer of ['', '   ', 'abc', '1.1', '1.9.x (Current)', '1.8.x (Stable)', '2.0-preview']) {
+    const res = validateSupportedGameVersion(badVer);
+    assert.equal(res.valid, false, `Expected "${badVer}" to be rejected`);
+    assert.equal(res.error, 'Enter a valid game version, for example 1.1.24.');
+  }
+
+  assert.equal(en['createMod.gameVersionLabel'], 'Game Version');
+  assert.equal(en['createMod.gameVersionPlaceholder'], 'Enter game version (minimum 1.1.24)');
+  assert.equal(en['createMod.errGameVersionMin'], 'Game version must be 1.1.24 or higher.');
+  assert.equal(en['createMod.errGameVersionFormat'], 'Enter a valid game version, for example 1.1.24.');
+});
+
+test('createModProject preserves exact trimmed supportedGameVersion without legacy defaults', async () => {
+  for (const enteredVersion of ['1.1.24', '1.5.2', '2.0.0-preview']) {
+    const project = createModProject({
+      modId: 'com.test.custom_ver',
+      name: 'Custom Version Mod',
+      version: '0.1.0',
+      author: 'Tester',
+      description: 'Validates custom SemVer preservation.',
+      supportedGameVersion: `  ${enteredVersion}  `,
+      categories: ['Items'],
+      templateId: 'blank',
+    });
+
+    assert.equal(project.manifest.supportedGameVersion, enteredVersion);
+    assert.equal(project.manifest.minGameVersion, '1.1.24');
+
+    const manifestFile = project.files.find((f) => f.path === 'mod.manifest.json');
+    assert.ok(manifestFile?.content);
+    const parsedManifest = JSON.parse(manifestFile.content) as Record<string, unknown>;
+    assert.equal(parsedManifest.supportedGameVersion, enteredVersion);
+
+    const validation = await validateModProject(project, [project], 'universal');
+    assert.equal(
+      validation.issues.filter((i) => i.code === 'UNSUPPORTED_GAME_VERSION' || i.code === 'MISSING_GAME_VERSION').length,
+      0
+    );
+  }
+});
+
+test('validator flags legacy "1.9.x (Current)" and "< 1.1.24" versions while accepting >= 1.1.24 SemVer', async () => {
+  const legacyProject = createStarterSampleProject();
+  legacyProject.manifest.supportedGameVersion = '1.9.x (Current)';
+  const legacyValidation = await validateModProject(legacyProject, [legacyProject], 'universal');
+  assert.ok(
+    legacyValidation.issues.some(
+      (i) => i.severity === 'error' && i.code === 'UNSUPPORTED_GAME_VERSION'
+    )
+  );
+
+  const belowMinProject = createStarterSampleProject();
+  belowMinProject.manifest.supportedGameVersion = '1.1.23';
+  const belowMinValidation = await validateModProject(belowMinProject, [belowMinProject], 'universal');
+  assert.ok(
+    belowMinValidation.issues.some(
+      (i) => i.severity === 'error' && i.code === 'UNSUPPORTED_GAME_VERSION'
+    )
+  );
+
+  const compatProject = createStarterSampleProject();
+  compatProject.manifest.supportedGameVersion = '1.9.0';
+  const compatValidation = await validateModProject(compatProject, [compatProject], 'universal');
+  assert.equal(compatValidation.errorCount, 0, JSON.stringify(compatValidation.issues));
+});
+
+test('general .woa3d classification, serialization, import, and category/content rejection work across arbitrary filenames', async () => {
+  const customSpec = getAssetFormatSpec('assets/models/arbitrary_custom_model.woa3d');
+  assert.ok(customSpec);
+  assert.equal(customSpec.category, '3d-model');
+  assert.equal(customSpec.nodeType, 'asset-3d');
+  assert.equal(customSpec.formatLabel, 'WOA3D');
+  assert.equal(customSpec.targetDirectory, 'assets/models');
+
+  assert.equal(isSupportedAssetPath('assets/models/arbitrary_custom_model.woa3d'), true);
+  assert.equal(isSupportedAssetPath('assets/textures/arbitrary_custom_model.woa3d'), false);
+
+  // Sample project round-trip preserves all 3 .woa3d assets + 1.1.24 version cleanly
+  const sample = createStarterSampleProject();
+  assert.equal(sample.manifest.supportedGameVersion, '1.1.24');
+  const { blob, filename } = await exportModArchiveBlob(sample, 'universal', { confirmWarnings: true });
+  const zip = await JSZip.loadAsync(await blob.arrayBuffer());
+  const modJson = JSON.parse(await zip.file('mod.json')!.async('string')) as Record<string, unknown>;
+  assert.equal(modJson.supportedGameVersion, '1.1.24');
+
+  const woa3dEntries = Object.keys(zip.files).filter((p) => p.endsWith('.woa3d'));
+  assert.equal(woa3dEntries.length, 3);
+  for (const woaPath of woa3dEntries) {
+    const raw = await zip.file(woaPath)!.async('string');
+    const parsed = parseAndValidateWoa3dContent(raw);
+    assert.equal(parsed.format, 'WOA3D');
+    assert.equal(parsed.type, '3d-model');
+    assert.equal(parsed.category, '3d-model');
+  }
+
+  // Arbitrary custom .woa3d inside a .woamod package imports cleanly without any filename whitelist
+  const customZip = new JSZip();
+  customZip.file(
+    'mod.json',
+    JSON.stringify({
+      modId: 'com.test.custom_models',
+      name: 'Custom Models Mod',
+      version: '1.0.0',
+      author: 'Tester',
+      supportedGameVersion: '1.2.5',
+      categories: ['Items'],
+    })
+  );
+  customZip.file(
+    'assets/models/ancient_compass_custom.woa3d',
+    serializeWoa3dAsset({
+      format: 'WOA3D',
+      preset: 'beacon-pedestal',
+      modCategory: 'Item',
+      pivotMode: 'bottom-center',
+      collision: { shape: 'box', scale: 1, offsetY: 0 },
+      transform: { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } },
+      material: { color: '#475569', accentColor: '#3B82F6', roughness: 0.4, metalness: 0.6, emissiveIntensity: 0.2, wireframe: false },
+    })
+  );
+  customZip.file(
+    'data/items.json',
+    JSON.stringify({
+      entries: [
+        {
+          id: 'com.test.custom_models:compass',
+          name: 'Ancient Compass',
+          description: 'Custom compass item.',
+          category: 'Item',
+          rarity: 'rare',
+          stackSize: 1,
+          value: 150,
+          model: 'assets/models/ancient_compass_custom.woa3d',
+        },
+      ],
+    })
+  );
+  const customBlob = await customZip.generateAsync({ type: 'blob' });
+  const customFile = new File([customBlob], filename, { type: 'application/octet-stream' });
+  const importedCustom = await importModFromFile(customFile);
+  assert.equal(importedCustom.manifest.supportedGameVersion, '1.2.5');
+  assert.equal(importedCustom.assets.length, 1);
+  assert.equal(importedCustom.assets[0].type, '3d-model');
+  assert.equal(importedCustom.assets[0].format, 'WOA3D');
+  assert.equal(importedCustom.assets[0].path, 'assets/models/ancient_compass_custom.woa3d');
+  assert.equal(importedCustom.contents?.items.length, 1);
+  assert.equal(importedCustom.contents?.items[0].id, 'com.test.custom_models:compass');
+
+  // Misplaced .woa3d under assets/textures/ is rejected as wrong_category
+  const wrongCatZip = new JSZip();
+  wrongCatZip.file(
+    'mod.json',
+    JSON.stringify({ modId: 'com.test.wrong_cat', name: 'Wrong Cat', version: '1.0.0', supportedGameVersion: '1.1.24' })
+  );
+  wrongCatZip.file('assets/textures/misplaced_sword.woa3d', JSON.stringify({ format: 'WOA3D', preset: 'relic-sword' }));
+  const wrongCatFile = new File([await wrongCatZip.generateAsync({ type: 'blob' })], 'wrong.woamod');
+  await assert.rejects(() => importModFromFile(wrongCatFile), /wrong_category/i);
+
+  // Corrupted .woa3d JSON is rejected cleanly
+  const badWoaZip = new JSZip();
+  badWoaZip.file(
+    'mod.json',
+    JSON.stringify({ modId: 'com.test.bad_woa3d', name: 'Bad WOA3D', version: '1.0.0', supportedGameVersion: '1.1.24' })
+  );
+  badWoaZip.file('assets/models/broken.woa3d', '{not-valid-json');
+  const badWoaFile = new File([await badWoaZip.generateAsync({ type: 'blob' })], 'broken.woamod');
+  await assert.rejects(() => importModFromFile(badWoaFile), /Corrupted WOA3D JSON/i);
 });

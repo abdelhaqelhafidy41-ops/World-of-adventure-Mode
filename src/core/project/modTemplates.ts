@@ -1,3 +1,4 @@
+import { serializeWoa3dAsset } from '@/src/core/assets/assetPipeline';
 import {
   createEmptyContentDatabase,
   syncContentFilesInProject,
@@ -132,19 +133,7 @@ export function applyTemplateToProject(
       parentPath: 'assets/models',
       type: 'asset-3d',
       assetId: id,
-      content: JSON.stringify(
-        {
-          format: asset.format,
-          preset: asset.preset,
-          modCategory: asset.modCategory,
-          pivotMode: asset.pivotMode,
-          collision: asset.collision,
-          transform: asset.transform,
-          material: asset.material,
-        },
-        null,
-        2
-      ),
+      content: serializeWoa3dAsset(asset),
       updatedAt: now,
     });
     return asset;

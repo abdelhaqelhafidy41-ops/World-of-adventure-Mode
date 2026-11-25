@@ -5,6 +5,81 @@ export const WOA_MOD_API_SCHEMA = 'woa.mod-api.v1';
 export const WOA_MOD_API_VERSION = '1.0.0';
 export const WOA_PACKAGE_FORMAT_VERSION = 2;
 export const WOA_COMPATIBLE_PACKAGE_FORMATS = [1, 2];
+export const MIN_SUPPORTED_GAME_VERSION = '1.1.24';
+export const DEFAULT_GAME_VERSION = '1.1.24';
+
+export interface ParsedGameVersion {
+  major: number;
+  minor: number;
+  patch: number;
+  prerelease?: string;
+}
+
+export interface GameVersionValidationResult {
+  valid: boolean;
+  code?: 'missing' | 'invalid_format' | 'below_minimum';
+  error?: string;
+  parsed?: ParsedGameVersion;
+}
+
+const GAME_VERSION_REGEX =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
+
+const MIN_GAME_VERSION_TUPLE: Pick<ParsedGameVersion, 'major' | 'minor' | 'patch'> = {
+  major: 1,
+  minor: 1,
+  patch: 24,
+};
+
+export function parseGameVersion(version: string): ParsedGameVersion | null {
+  const match = GAME_VERSION_REGEX.exec(version.trim());
+  if (!match) return null;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    prerelease: match[4] || undefined,
+  };
+}
+
+export function compareGameVersionTuples(
+  a: Pick<ParsedGameVersion, 'major' | 'minor' | 'patch'>,
+  b: Pick<ParsedGameVersion, 'major' | 'minor' | 'patch'>
+): number {
+  if (a.major !== b.major) return a.major - b.major;
+  if (a.minor !== b.minor) return a.minor - b.minor;
+  return a.patch - b.patch;
+}
+
+export function validateSupportedGameVersion(
+  version: string | undefined | null
+): GameVersionValidationResult {
+  const trimmed = (version ?? '').trim();
+  if (!trimmed) {
+    return {
+      valid: false,
+      code: 'missing',
+      error: t('createMod.errGameVersionFormat'),
+    };
+  }
+  const parsed = parseGameVersion(trimmed);
+  if (!parsed) {
+    return {
+      valid: false,
+      code: 'invalid_format',
+      error: t('createMod.errGameVersionFormat'),
+    };
+  }
+  if (compareGameVersionTuples(parsed, MIN_GAME_VERSION_TUPLE) < 0) {
+    return {
+      valid: false,
+      code: 'below_minimum',
+      error: t('createMod.errGameVersionMin'),
+      parsed,
+    };
+  }
+  return { valid: true, parsed };
+}
 
 export interface ModApiSchemaField {
   name: string;
@@ -89,8 +164,8 @@ export const WOA_MOD_API_DOMAINS: ModApiDomainSpec[] = [
         compatibility: {
           executionMode: 'data-driven',
           requiresNativeCode: false,
-          minGameVersion: '1.8.0',
-          maxGameVersion: '2.0.x',
+          minGameVersion: '1.1.24',
+          maxGameVersion: '2.x',
           compatiblePackageFormats: [1, 2],
         },
         loadOrder: {
@@ -247,14 +322,17 @@ export function buildModCompatibilityInfo(
   manifest: ModManifest,
   targetPlatform: TargetPlatform
 ): ModCompatibilityInfo {
+  const parsedTarget = parseGameVersion(manifest.supportedGameVersion ?? '');
+  const defaultMax =
+    parsedTarget && parsedTarget.major >= 2 ? `${parsedTarget.major}.x` : '2.x';
   return {
     modApiSchema: WOA_MOD_API_SCHEMA,
     modApiVersion: manifest.modApiVersion || WOA_MOD_API_VERSION,
     packageFormatVersion: manifest.packageFormatVersion || WOA_PACKAGE_FORMAT_VERSION,
     compatiblePackageFormats: [...WOA_COMPATIBLE_PACKAGE_FORMATS],
     supportedGameVersion: manifest.supportedGameVersion,
-    minGameVersion: manifest.minGameVersion || '1.8.0',
-    maxGameVersion: manifest.maxGameVersion || '2.0.x',
+    minGameVersion: manifest.minGameVersion || MIN_SUPPORTED_GAME_VERSION,
+    maxGameVersion: manifest.maxGameVersion || defaultMax,
     executionModel: 'data-driven',
     requiresNativeCode: false,
     backwardCompatible: true,

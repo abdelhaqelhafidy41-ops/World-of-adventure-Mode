@@ -16,6 +16,7 @@ import {
   getUniqueAssetPath,
   importLocalAssetFile,
   sanitizeFileName,
+  serializeWoa3dAsset,
 } from '@/src/core/assets/assetPipeline';
 import {
   CONTENT_FILE_PATHS,
@@ -560,23 +561,7 @@ export default function App() {
       f.assetId === assetId && updatedAsset && !updatedAsset.isImported
         ? {
             ...f,
-            content: JSON.stringify(
-              {
-                format: updatedAsset.format,
-                preset: updatedAsset.preset,
-                modCategory: updatedAsset.modCategory ?? 'Item',
-                pivotMode: updatedAsset.pivotMode ?? 'bottom-center',
-                collision: updatedAsset.collision ?? {
-                  shape: 'box',
-                  scale: 1,
-                  offsetY: 0,
-                },
-                transform: updatedAsset.transform,
-                material: updatedAsset.material,
-              },
-              null,
-              2
-            ),
+            content: serializeWoa3dAsset(updatedAsset),
             updatedAt: now,
           }
         : f
@@ -689,19 +674,7 @@ export default function App() {
       parentPath: 'assets/models',
       type: 'asset-3d',
       assetId,
-      content: JSON.stringify(
-        {
-          format: newAsset.format,
-          preset: newAsset.preset,
-          modCategory: newAsset.modCategory,
-          pivotMode: newAsset.pivotMode,
-          collision: newAsset.collision,
-          transform: newAsset.transform,
-          material: newAsset.material,
-        },
-        null,
-        2
-      ),
+      content: serializeWoa3dAsset(newAsset),
       updatedAt: now,
     };
 

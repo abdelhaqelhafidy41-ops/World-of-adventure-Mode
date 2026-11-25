@@ -1,9 +1,12 @@
 import {
+  getAssetFormatSpec,
+  getExpectedAssetCategoryForPath,
   getFileExtension,
   inspect3DBuffer,
   inspectAudioBlob,
   inspectImageBlob,
   isSupportedAssetPath,
+  parseAndValidateWoa3dContent,
 } from '@/src/core/assets/assetPipeline';
 import {
   CONTENT_FILE_PATHS,
@@ -30,9 +33,9 @@ import {
 } from '@/src/core/content/contentRegistry';
 import { t, type TranslationKey } from '@/src/i18n';
 import {
-  SUPPORTED_GAME_VERSIONS,
   validateModId,
   validateSemver,
+  validateSupportedGameVersion,
 } from '@/src/core/project/modScaffolder';
 import { getAssetBlobRecord } from '@/src/core/storage/modRepository';
 import { isBlockedExecutableFile } from '@/src/core/security/importGuard';
@@ -51,14 +54,6 @@ import {
   ValidationSeverity,
   WoAContentBase,
 } from '@/src/types/mod';
-
-const ACTIVE_GAME_VERSIONS = new Set([
-  '1.8.x (Stable)',
-  '1.9.x (Current)',
-  '2.0-preview',
-]);
-
-const LEGACY_GAME_VERSIONS = new Set(['1.7.x (Legacy)']);
 
 const RESERVED_WINDOWS_NAMES = new Set([
   'CON',
@@ -608,36 +603,31 @@ export async function validateModProject(
     });
   }
 
-  // Supported game version check
+  // Supported game version check (authoritative SemVer >= 1.1.24)
   const gameVer = manifest.supportedGameVersion?.trim() ?? '';
-  const matchesSemverPrefix = /^(1\.8|1\.9|2\.0)(\.\d+|x|\*)?/.test(gameVer);
+  const gameVerResult = validateSupportedGameVersion(gameVer);
   if (!gameVer) {
     pushIssue('error', 'MISSING_GAME_VERSION', 'manifest', {
       file: activeManifestFile,
       object: manifest.name || t('validator.obj.manifest'),
       property: 'supportedGameVersion',
       problem: t('validator.missingGameVerProblem'),
-      suggestion: t('validator.missingGameVerSuggestion', {
-        versions: SUPPORTED_GAME_VERSIONS.slice(0, 3).join(', '),
-      }),
+      suggestion: t('validator.missingGameVerSuggestion'),
       targetType: 'manifest',
     });
-  } else if (LEGACY_GAME_VERSIONS.has(gameVer) || /^1\.7\./.test(gameVer)) {
-    pushIssue('warning', 'LEGACY_GAME_VERSION', 'manifest', {
-      file: activeManifestFile,
-      object: manifest.name || t('validator.obj.manifest'),
-      property: 'supportedGameVersion',
-      problem: t('validator.legacyGameVerProblem', { version: gameVer }),
-      suggestion: t('validator.legacyGameVerSuggestion'),
-      targetType: 'manifest',
-    });
-  } else if (!ACTIVE_GAME_VERSIONS.has(gameVer) && !matchesSemverPrefix) {
+  } else if (!gameVerResult.valid) {
     pushIssue('error', 'UNSUPPORTED_GAME_VERSION', 'manifest', {
       file: activeManifestFile,
       object: manifest.name || t('validator.obj.manifest'),
       property: 'supportedGameVersion',
-      problem: t('validator.unsupportedGameVerProblem', { version: gameVer }),
-      suggestion: t('validator.unsupportedGameVerSuggestion'),
+      problem:
+        gameVerResult.code === 'below_minimum'
+          ? t('validator.legacyGameVerProblem', { version: gameVer })
+          : t('validator.unsupportedGameVerProblem', { version: gameVer }),
+      suggestion:
+        gameVerResult.code === 'below_minimum'
+          ? t('validator.legacyGameVerSuggestion')
+          : t('validator.unsupportedGameVerSuggestion'),
       targetType: 'manifest',
     });
   }
@@ -761,16 +751,36 @@ export async function validateModProject(
         });
       }
 
-      if (file.path.startsWith('assets/') && !isSupportedAssetPath(file.path)) {
-        pushIssue('warning', 'UNSUPPORTED_ASSET_EXCLUDED', 'assets', {
-          file: file.path,
-          object: file.name,
-          property: 'format',
-          problem: t('validator.unsupportedAssetExcludedProblem', { name: file.name }),
-          suggestion: t('validator.unsupportedAssetExcludedSuggestion'),
-          targetType: 'file',
-          targetRef: file.path,
-        });
+      if (file.path.startsWith('assets/')) {
+        const formatSpec = getAssetFormatSpec(file.path);
+        const expectedDirCat = getExpectedAssetCategoryForPath(file.path);
+        if (!formatSpec) {
+          pushIssue('warning', 'UNSUPPORTED_ASSET_EXCLUDED', 'assets', {
+            file: file.path,
+            object: file.name,
+            property: 'format',
+            problem: t('validator.unsupportedAssetExcludedProblem', { name: file.name }),
+            suggestion: t('validator.unsupportedAssetExcludedSuggestion'),
+            targetType: 'file',
+            targetRef: file.path,
+          });
+        } else if (expectedDirCat && expectedDirCat !== formatSpec.category) {
+          pushIssue('error', 'INVALID_ASSET_CATEGORY', 'assets', {
+            file: file.path,
+            object: file.name,
+            property: 'path',
+            problem: t('validator.wrongAssetCategoryProblem', {
+              path: file.path,
+              actualCategory: formatSpec.category,
+              expectedDir: formatSpec.targetDirectory,
+            }),
+            suggestion: t('validator.wrongAssetCategorySuggestion', {
+              expectedDir: formatSpec.targetDirectory,
+            }),
+            targetType: 'file',
+            targetRef: file.path,
+          });
+        }
       }
 
       if (
@@ -896,7 +906,9 @@ export async function validateModProject(
       });
     }
 
-    if (!isSupportedAssetPath(asset.path)) {
+    const assetSpec = getAssetFormatSpec(asset.path);
+    const expectedAssetDirCat = getExpectedAssetCategoryForPath(asset.path);
+    if (!assetSpec) {
       pushIssue('warning', 'UNSUPPORTED_ASSET_FORMAT', 'assets', {
         file: asset.path,
         object: asset.name,
@@ -906,6 +918,29 @@ export async function validateModProject(
           path: asset.path,
         }),
         suggestion: t('validator.unsupportedAssetFormatSuggestion'),
+        targetType: 'asset',
+        targetRef: asset.id,
+      });
+      continue;
+    }
+
+    if (
+      (expectedAssetDirCat && expectedAssetDirCat !== assetSpec.category) ||
+      asset.type !== assetSpec.category ||
+      !isSupportedAssetPath(asset.path)
+    ) {
+      pushIssue('error', 'INVALID_ASSET_CATEGORY', 'assets', {
+        file: asset.path,
+        object: asset.name,
+        property: 'type',
+        problem: t('validator.wrongAssetCategoryProblem', {
+          path: asset.path,
+          actualCategory: assetSpec.category,
+          expectedDir: assetSpec.targetDirectory,
+        }),
+        suggestion: t('validator.wrongAssetCategorySuggestion', {
+          expectedDir: assetSpec.targetDirectory,
+        }),
         targetType: 'asset',
         targetRef: asset.id,
       });
@@ -994,20 +1029,23 @@ export async function validateModProject(
           });
         } else {
           try {
-            const parsed = JSON.parse(node.content) as { preset?: string };
-            if (!parsed.preset) {
-              pushIssue('error', 'INVALID_3D_MODEL', 'models', {
-                file: asset.path,
-                object: asset.name,
-                property: 'preset',
-                problem: t('validator.woa3dMissingPresetProblem'),
-                suggestion: t('validator.woa3dMissingPresetSuggestion'),
-                targetType: 'file',
-                targetRef: asset.path,
-              });
-            }
-          } catch {
-            // JSON syntax error already logged above
+            parseAndValidateWoa3dContent(node.content);
+          } catch (err) {
+            const reason = err instanceof Error ? err.message : 'Invalid WOA3D payload';
+            const missingPreset = /preset/i.test(reason);
+            pushIssue('error', 'INVALID_3D_MODEL', 'models', {
+              file: asset.path,
+              object: asset.name,
+              property: missingPreset ? 'preset' : 'content',
+              problem: missingPreset
+                ? t('validator.woa3dMissingPresetProblem')
+                : t('validator.woa3dInvalidContentProblem', { reason }),
+              suggestion: missingPreset
+                ? t('validator.woa3dMissingPresetSuggestion')
+                : t('validator.woa3dInvalidContentSuggestion'),
+              targetType: 'file',
+              targetRef: asset.path,
+            });
           }
         }
       } else if (blobRecord) {

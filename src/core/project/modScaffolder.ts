@@ -1,7 +1,15 @@
 import {
+  DEFAULT_GAME_VERSION,
+  MIN_SUPPORTED_GAME_VERSION,
   WOA_MOD_API_VERSION,
   WOA_PACKAGE_FORMAT_VERSION,
+  compareGameVersionTuples,
+  parseGameVersion,
+  validateSupportedGameVersion,
+  type GameVersionValidationResult,
+  type ParsedGameVersion,
 } from '@/src/core/api/woaModApiSpec';
+import { serializeWoa3dAsset } from '@/src/core/assets/assetPipeline';
 import {
   createEmptyContentDatabase,
   createSampleContentDatabase,
@@ -19,6 +27,16 @@ import {
   ModProject,
 } from '@/src/types/mod';
 
+export {
+  MIN_SUPPORTED_GAME_VERSION,
+  DEFAULT_GAME_VERSION,
+  parseGameVersion,
+  compareGameVersionTuples,
+  validateSupportedGameVersion,
+  type GameVersionValidationResult,
+  type ParsedGameVersion,
+};
+
 export const MOD_CATEGORIES: ModCategory[] = [
   'Items',
   'Weapons',
@@ -31,10 +49,11 @@ export const MOD_CATEGORIES: ModCategory[] = [
 ];
 
 export const SUPPORTED_GAME_VERSIONS: string[] = [
-  '1.8.x (Stable)',
-  '1.9.x (Current)',
-  '2.0-preview',
-  '1.7.x (Legacy)',
+  '1.1.24',
+  '1.2.0',
+  '1.8.0',
+  '1.9.0',
+  '2.0.0',
 ];
 
 export function suggestModId(name: string, author = 'creator'): string {
@@ -160,6 +179,14 @@ export function createModProject(input: CreateModInput): ModProject {
   const localizedName = buildLocalizedExportMap(nameEn, nameAr ? { ar: nameAr } : undefined);
   const localizedDesc = buildLocalizedExportMap(descEn, descAr ? { ar: descAr } : undefined);
 
+  const resolvedGameVersion =
+    input.supportedGameVersion?.trim() || DEFAULT_GAME_VERSION;
+  const parsedGameVersion = parseGameVersion(resolvedGameVersion);
+  const resolvedMaxGameVersion =
+    parsedGameVersion && parsedGameVersion.major >= 2
+      ? `${parsedGameVersion.major}.x`
+      : '2.x';
+
   const manifest: ModManifest = {
     modId,
     name: nameEn,
@@ -174,9 +201,9 @@ export function createModProject(input: CreateModInput): ModProject {
           },
         }
       : {}),
-    supportedGameVersion: input.supportedGameVersion || '1.9.x (Current)',
-    minGameVersion: '1.8.0',
-    maxGameVersion: '2.0.x',
+    supportedGameVersion: resolvedGameVersion,
+    minGameVersion: MIN_SUPPORTED_GAME_VERSION,
+    maxGameVersion: resolvedMaxGameVersion,
     modApiVersion: WOA_MOD_API_VERSION,
     packageFormatVersion: WOA_PACKAGE_FORMAT_VERSION,
     categories,
@@ -370,16 +397,7 @@ ${manifest.description}
       parentPath: 'assets/models',
       type: 'asset-3d',
       assetId: primaryAsset.id,
-      content: JSON.stringify(
-        {
-          format: 'WOA3D',
-          preset: primaryAsset.preset,
-          transform: primaryAsset.transform,
-          material: primaryAsset.material,
-        },
-        null,
-        2
-      ),
+      content: serializeWoa3dAsset(primaryAsset),
       updatedAt: now,
     },
     {
@@ -489,7 +507,7 @@ export function createStarterSampleProject(): ModProject {
     author: 'AdventureForge',
     description:
       'Adds ancient astral weaponry, beacon shrines, and frontier supply props for high-altitude exploration.',
-    supportedGameVersion: '1.9.x (Current)',
+    supportedGameVersion: DEFAULT_GAME_VERSION,
     categories: ['Weapons', 'Items', 'Biomes'],
     targetPlatforms: ['universal', 'windows', 'android'],
   });
@@ -500,10 +518,13 @@ export function createStarterSampleProject(): ModProject {
     name: 'Skyreach Waystone',
     path: 'assets/models/skyreach_waystone.woa3d',
     type: '3d-model',
+    modCategory: 'Decoration',
     preset: 'crystal-obelisk',
     format: 'WOA3D',
     sizeBytes: 18400,
     triangleEstimate: 980,
+    pivotMode: 'bottom-center',
+    collision: { shape: 'capsule', scale: 1, offsetY: 0 },
     transform: {
       position: { x: 0, y: 0, z: 0 },
       rotation: { x: 0, y: 24, z: 0 },
@@ -530,10 +551,13 @@ export function createStarterSampleProject(): ModProject {
     name: 'Expedition Supply Crate',
     path: 'assets/models/expedition_crate.woa3d',
     type: '3d-model',
+    modCategory: 'Decoration',
     preset: 'frontier-crate',
     format: 'WOA3D',
     sizeBytes: 12100,
     triangleEstimate: 640,
+    pivotMode: 'bottom-center',
+    collision: { shape: 'box', scale: 1, offsetY: 0 },
     transform: {
       position: { x: 0, y: 0, z: 0 },
       rotation: { x: 0, y: 0, z: 0 },
@@ -564,16 +588,7 @@ export function createStarterSampleProject(): ModProject {
       parentPath: 'assets/models',
       type: 'asset-3d',
       assetId: secondAsset.id,
-      content: JSON.stringify(
-        {
-          format: 'WOA3D',
-          preset: secondAsset.preset,
-          transform: secondAsset.transform,
-          material: secondAsset.material,
-        },
-        null,
-        2
-      ),
+      content: serializeWoa3dAsset(secondAsset),
       updatedAt: now,
     },
     {
@@ -583,16 +598,7 @@ export function createStarterSampleProject(): ModProject {
       parentPath: 'assets/models',
       type: 'asset-3d',
       assetId: thirdAsset.id,
-      content: JSON.stringify(
-        {
-          format: 'WOA3D',
-          preset: thirdAsset.preset,
-          transform: thirdAsset.transform,
-          material: thirdAsset.material,
-        },
-        null,
-        2
-      ),
+      content: serializeWoa3dAsset(thirdAsset),
       updatedAt: now,
     }
   );

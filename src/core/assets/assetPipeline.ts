@@ -9,11 +9,18 @@ import {
 } from '@/src/core/security/importGuard';
 import { t } from '@/src/i18n';
 import {
+  ASSET_MOD_CATEGORIES,
+  AssetCollisionConfig,
+  AssetMaterialConfig,
+  AssetModCategory,
+  AssetPresetKind,
+  AssetTransform,
   ExtractedMaterialInfo,
   ModAsset,
   ModFileNode,
   ModNodeType,
   ModelDimensions,
+  PivotMode,
 } from '@/src/types/mod';
 
 export type SupportedAssetCategory = '3d-model' | 'texture' | 'audio';
@@ -51,6 +58,14 @@ export const SUPPORTED_IMPORT_FORMATS: Record<string, AssetFormatSpec> = {
     targetDirectory: 'assets/models',
     nodeType: 'asset-3d',
     defaultMime: 'text/plain',
+  },
+  woa3d: {
+    ext: 'woa3d',
+    formatLabel: 'WOA3D',
+    category: '3d-model',
+    targetDirectory: 'assets/models',
+    nodeType: 'asset-3d',
+    defaultMime: 'application/vnd.woa.model+json',
   },
   png: {
     ext: 'png',
@@ -102,13 +117,12 @@ export const SUPPORTED_IMPORT_FORMATS: Record<string, AssetFormatSpec> = {
   },
 };
 
-export const SUPPORTED_PACKAGED_ASSET_EXTENSIONS = new Set([
-  ...Object.keys(SUPPORTED_IMPORT_FORMATS),
-  'woa3d',
-]);
+export const SUPPORTED_PACKAGED_ASSET_EXTENSIONS = new Set(
+  Object.keys(SUPPORTED_IMPORT_FORMATS)
+);
 
 export const ACCEPTED_ASSET_INPUT_EXTENSIONS =
-  '.glb,.gltf,.obj,.png,.jpg,.jpeg,.wav,.ogg,.mp3';
+  '.glb,.gltf,.obj,.woa3d,.png,.jpg,.jpeg,.wav,.ogg,.mp3';
 
 export function getFileExtension(filename: string): string {
   const parts = filename.toLowerCase().split('.');
@@ -120,9 +134,270 @@ export function getAssetFormatSpec(filename: string): AssetFormatSpec | null {
   return SUPPORTED_IMPORT_FORMATS[ext] ?? null;
 }
 
+export function getExpectedAssetCategoryForPath(
+  assetPath: string
+): SupportedAssetCategory | null {
+  const lower = assetPath.replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase();
+  if (lower.startsWith('assets/models/')) return '3d-model';
+  if (lower.startsWith('assets/textures/')) return 'texture';
+  if (lower.startsWith('assets/audio/') || lower.startsWith('assets/sounds/')) {
+    return 'audio';
+  }
+  return null;
+}
+
+export function isAssetInExpectedCategoryDirectory(
+  assetPath: string,
+  category: SupportedAssetCategory
+): boolean {
+  return getExpectedAssetCategoryForPath(assetPath) === category;
+}
+
 export function isSupportedAssetPath(path: string): boolean {
-  const ext = getFileExtension(path);
-  return SUPPORTED_PACKAGED_ASSET_EXTENSIONS.has(ext);
+  const spec = getAssetFormatSpec(path);
+  if (!spec) return false;
+  const expectedCat = getExpectedAssetCategoryForPath(path);
+  return expectedCat === null ? true : expectedCat === spec.category;
+}
+
+const VALID_WOA3D_PRESETS = new Set<AssetPresetKind>([
+  'relic-sword',
+  'crystal-obelisk',
+  'frontier-crate',
+  'clockwork-sentinel',
+  'beacon-pedestal',
+]);
+
+const WOA3D_TRIANGLE_BY_PRESET: Record<AssetPresetKind, number> = {
+  'relic-sword': 1420,
+  'crystal-obelisk': 980,
+  'frontier-crate': 640,
+  'clockwork-sentinel': 2140,
+  'beacon-pedestal': 1180,
+};
+
+const VALID_ASSET_MOD_CATEGORY_SET = new Set<string>(ASSET_MOD_CATEGORIES);
+const VALID_COLLISION_SHAPES = new Set(['none', 'box', 'sphere', 'capsule']);
+
+const DEFAULT_WOA3D_TRANSFORM: AssetTransform = {
+  position: { x: 0, y: 0, z: 0 },
+  rotation: { x: 0, y: 0, z: 0 },
+  scale: { x: 1, y: 1, z: 1 },
+};
+
+const DEFAULT_WOA3D_MATERIAL: AssetMaterialConfig = {
+  color: '#475569',
+  accentColor: '#3B82F6',
+  roughness: 0.35,
+  metalness: 0.65,
+  emissiveIntensity: 0.3,
+  wireframe: false,
+};
+
+const DEFAULT_WOA3D_COLLISION: AssetCollisionConfig = {
+  shape: 'box',
+  scale: 1,
+  offsetY: 0,
+};
+
+function isFiniteVec3(val: unknown): val is { x: number; y: number; z: number } {
+  if (!val || typeof val !== 'object' || Array.isArray(val)) return false;
+  const rec = val as Record<string, unknown>;
+  return (
+    typeof rec.x === 'number' &&
+    Number.isFinite(rec.x) &&
+    typeof rec.y === 'number' &&
+    Number.isFinite(rec.y) &&
+    typeof rec.z === 'number' &&
+    Number.isFinite(rec.z)
+  );
+}
+
+export interface ParsedWoa3dAsset {
+  format: 'WOA3D';
+  type: '3d-model';
+  category: '3d-model';
+  preset: AssetPresetKind;
+  rawPreset: string;
+  modCategory: AssetModCategory;
+  pivotMode: PivotMode;
+  collision: AssetCollisionConfig;
+  transform: AssetTransform;
+  material: AssetMaterialConfig;
+  triangleEstimate: number;
+}
+
+export function parseAndValidateWoa3dContent(rawText: string): ParsedWoa3dAsset {
+  if (!rawText || !rawText.trim()) {
+    throw new Error('WOA3D asset file is empty.');
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = safeJsonParse<unknown>(rawText);
+  } catch (err) {
+    throw new Error(
+      `Corrupted WOA3D JSON: ${err instanceof Error ? err.message : 'Invalid JSON'}`
+    );
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('WOA3D root payload must be a JSON object.');
+  }
+
+  const obj = parsed as Record<string, unknown>;
+
+  if (obj.format !== undefined) {
+    if (typeof obj.format !== 'string' || obj.format.trim().toUpperCase() !== 'WOA3D') {
+      throw new Error(`Invalid WOA3D format field: "${String(obj.format)}".`);
+    }
+  }
+
+  if (obj.type !== undefined) {
+    if (typeof obj.type !== 'string' || obj.type.trim() !== '3d-model') {
+      throw new Error(`Incompatible WOA3D asset type: "${String(obj.type)}" (expected "3d-model").`);
+    }
+  }
+
+  if (obj.category !== undefined) {
+    if (typeof obj.category !== 'string' || obj.category.trim() !== '3d-model') {
+      throw new Error(
+        `Incompatible WOA3D asset category: "${String(obj.category)}" (expected "3d-model").`
+      );
+    }
+  }
+
+  if (typeof obj.preset !== 'string' || !obj.preset.trim() || /[\r\n<>]/.test(obj.preset)) {
+    throw new Error('WOA3D definition is missing a valid geometry "preset".');
+  }
+  const rawPreset = obj.preset.trim();
+  const preset: AssetPresetKind = VALID_WOA3D_PRESETS.has(rawPreset as AssetPresetKind)
+    ? (rawPreset as AssetPresetKind)
+    : 'beacon-pedestal';
+
+  const modCategory: AssetModCategory =
+    typeof obj.modCategory === 'string' && VALID_ASSET_MOD_CATEGORY_SET.has(obj.modCategory)
+      ? (obj.modCategory as AssetModCategory)
+      : 'Item';
+
+  const pivotMode: PivotMode =
+    obj.pivotMode === 'center' || obj.pivotMode === 'bottom-center'
+      ? obj.pivotMode
+      : 'bottom-center';
+
+  let collision: AssetCollisionConfig = { ...DEFAULT_WOA3D_COLLISION };
+  if (obj.collision !== undefined) {
+    if (!obj.collision || typeof obj.collision !== 'object' || Array.isArray(obj.collision)) {
+      throw new Error('WOA3D "collision" field must be an object.');
+    }
+    const c = obj.collision as Record<string, unknown>;
+    collision = {
+      shape:
+        typeof c.shape === 'string' && VALID_COLLISION_SHAPES.has(c.shape)
+          ? (c.shape as AssetCollisionConfig['shape'])
+          : DEFAULT_WOA3D_COLLISION.shape,
+      scale:
+        typeof c.scale === 'number' && Number.isFinite(c.scale) && c.scale > 0
+          ? c.scale
+          : DEFAULT_WOA3D_COLLISION.scale,
+      offsetY:
+        typeof c.offsetY === 'number' && Number.isFinite(c.offsetY)
+          ? c.offsetY
+          : DEFAULT_WOA3D_COLLISION.offsetY,
+    };
+  }
+
+  let transform: AssetTransform = {
+    position: { ...DEFAULT_WOA3D_TRANSFORM.position },
+    rotation: { ...DEFAULT_WOA3D_TRANSFORM.rotation },
+    scale: { ...DEFAULT_WOA3D_TRANSFORM.scale },
+  };
+  if (obj.transform !== undefined) {
+    if (!obj.transform || typeof obj.transform !== 'object' || Array.isArray(obj.transform)) {
+      throw new Error('WOA3D "transform" field must be an object.');
+    }
+    const tr = obj.transform as Record<string, unknown>;
+    if (tr.position !== undefined && !isFiniteVec3(tr.position)) {
+      throw new Error('WOA3D "transform.position" must have numeric x, y, z coordinates.');
+    }
+    if (tr.rotation !== undefined && !isFiniteVec3(tr.rotation)) {
+      throw new Error('WOA3D "transform.rotation" must have numeric x, y, z angles.');
+    }
+    if (tr.scale !== undefined && !isFiniteVec3(tr.scale)) {
+      throw new Error('WOA3D "transform.scale" must have numeric x, y, z values.');
+    }
+    transform = {
+      position: isFiniteVec3(tr.position) ? { ...tr.position } : transform.position,
+      rotation: isFiniteVec3(tr.rotation) ? { ...tr.rotation } : transform.rotation,
+      scale: isFiniteVec3(tr.scale) ? { ...tr.scale } : transform.scale,
+    };
+  }
+
+  let material: AssetMaterialConfig = { ...DEFAULT_WOA3D_MATERIAL };
+  if (obj.material !== undefined) {
+    if (!obj.material || typeof obj.material !== 'object' || Array.isArray(obj.material)) {
+      throw new Error('WOA3D "material" field must be an object.');
+    }
+    const mat = obj.material as Record<string, unknown>;
+    material = {
+      color: typeof mat.color === 'string' && mat.color.trim() ? mat.color.trim() : material.color,
+      accentColor:
+        typeof mat.accentColor === 'string' && mat.accentColor.trim()
+          ? mat.accentColor.trim()
+          : material.accentColor,
+      roughness:
+        typeof mat.roughness === 'number' && Number.isFinite(mat.roughness)
+          ? mat.roughness
+          : material.roughness,
+      metalness:
+        typeof mat.metalness === 'number' && Number.isFinite(mat.metalness)
+          ? mat.metalness
+          : material.metalness,
+      emissiveIntensity:
+        typeof mat.emissiveIntensity === 'number' && Number.isFinite(mat.emissiveIntensity)
+          ? mat.emissiveIntensity
+          : material.emissiveIntensity,
+      wireframe: typeof mat.wireframe === 'boolean' ? mat.wireframe : material.wireframe,
+    };
+  }
+
+  return {
+    format: 'WOA3D',
+    type: '3d-model',
+    category: '3d-model',
+    preset,
+    rawPreset,
+    modCategory,
+    pivotMode,
+    collision,
+    transform,
+    material,
+    triangleEstimate: WOA3D_TRIANGLE_BY_PRESET[preset] ?? 1180,
+  };
+}
+
+export function serializeWoa3dAsset(
+  asset: Pick<
+    ModAsset,
+    'format' | 'preset' | 'modCategory' | 'pivotMode' | 'collision' | 'transform' | 'material'
+  >
+): string {
+  return JSON.stringify(
+    {
+      $schema: 'woa.asset3d.v1',
+      format: asset.format || 'WOA3D',
+      type: '3d-model',
+      category: '3d-model',
+      preset: asset.preset ?? 'beacon-pedestal',
+      modCategory: asset.modCategory ?? 'Item',
+      pivotMode: asset.pivotMode ?? 'bottom-center',
+      collision: asset.collision ?? DEFAULT_WOA3D_COLLISION,
+      transform: asset.transform,
+      material: asset.material,
+    },
+    null,
+    2
+  );
 }
 
 export function sanitizeFileName(rawName: string, ext: string): string {
@@ -354,9 +629,6 @@ export async function importLocalAssetFile(
 
   const safeProjectId = sanitizeSafeModId(projectId);
   const assetId = replaceAsset?.id ?? `asset_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-  const blobKey = `${safeProjectId}/${assetId}`;
-
-  await saveAssetBlob(blobKey, safeBuffer, mimeType);
 
   const sanitizedName = sanitizeFileName(file.name, spec.ext);
   let targetFileName = sanitizedName;
@@ -376,6 +648,60 @@ export async function importLocalAssetFile(
   const displayName =
     replaceAsset?.name ??
     (file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim() || targetFileName);
+
+  if (spec.ext === 'woa3d') {
+    const rawText = new TextDecoder().decode(safeBuffer);
+    const parsedWoa3d = parseAndValidateWoa3dContent(rawText);
+    const serialized = serializeWoa3dAsset({
+      format: 'WOA3D',
+      preset: parsedWoa3d.preset,
+      modCategory: replaceAsset?.modCategory ?? parsedWoa3d.modCategory,
+      pivotMode: replaceAsset?.pivotMode ?? parsedWoa3d.pivotMode,
+      collision: replaceAsset?.collision ?? parsedWoa3d.collision,
+      transform: parsedWoa3d.transform,
+      material: parsedWoa3d.material,
+    });
+
+    const asset: ModAsset = {
+      id: assetId,
+      name: displayName,
+      path: targetPath,
+      type: '3d-model',
+      modCategory: replaceAsset?.modCategory ?? parsedWoa3d.modCategory,
+      preset: parsedWoa3d.preset,
+      originalFileName: file.name,
+      isImported: false,
+      format: spec.formatLabel,
+      sizeBytes: serialized.length,
+      triangleEstimate: parsedWoa3d.triangleEstimate,
+      pivotMode: replaceAsset?.pivotMode ?? parsedWoa3d.pivotMode,
+      collision: replaceAsset?.collision ?? parsedWoa3d.collision,
+      transform: parsedWoa3d.transform,
+      material: parsedWoa3d.material,
+      metadata: {
+        source: 'woa3d-import',
+        originalFile: file.name,
+      },
+      createdAt: replaceAsset?.createdAt ?? now,
+      updatedAt: now,
+    };
+
+    const fileNode: ModFileNode = {
+      id: `file_${assetId}`,
+      name: targetFileName,
+      path: targetPath,
+      parentPath: spec.targetDirectory,
+      type: spec.nodeType,
+      content: serialized,
+      assetId,
+      updatedAt: now,
+    };
+
+    return { asset, fileNode };
+  }
+
+  const blobKey = `${safeProjectId}/${assetId}`;
+  await saveAssetBlob(blobKey, safeBuffer, mimeType);
 
   let dimensions: ModAsset['dimensions'];
   let triangleEstimate = 0;

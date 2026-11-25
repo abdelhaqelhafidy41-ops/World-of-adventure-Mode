@@ -1,4 +1,8 @@
 import {
+  DEFAULT_GAME_VERSION,
+  validateSupportedGameVersion,
+} from '@/src/core/api/woaModApiSpec';
+import {
   DEFAULT_LANGUAGE,
   isSupportedLanguage,
   LANGUAGE_STORAGE_KEY,
@@ -38,7 +42,7 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   language: DEFAULT_LANGUAGE,
   theme: 'dark',
   defaultAuthor: 'Creator',
-  defaultGameVersion: '1.9.x (Current)',
+  defaultGameVersion: DEFAULT_GAME_VERSION,
   defaultTargetPlatform: 'universal',
   viewportGrid: true,
   viewportAxes: true,
@@ -515,21 +519,25 @@ export async function listBuildHistory(
 }
 
 function syncStoredLanguageFallback(settings: EditorSettings): EditorSettings {
+  let normalized = settings;
+  if (!validateSupportedGameVersion(normalized.defaultGameVersion).valid) {
+    normalized = { ...normalized, defaultGameVersion: DEFAULT_GAME_VERSION };
+  }
   try {
     if (typeof window !== 'undefined' && window.localStorage) {
-      if (isSupportedLanguage(settings.language)) {
-        window.localStorage.setItem(LANGUAGE_STORAGE_KEY, settings.language);
+      if (isSupportedLanguage(normalized.language)) {
+        window.localStorage.setItem(LANGUAGE_STORAGE_KEY, normalized.language);
       } else {
         const cached = window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
         if (isSupportedLanguage(cached)) {
-          return { ...settings, language: cached };
+          return { ...normalized, language: cached };
         }
       }
     }
   } catch {
     // ignore storage fallback errors
   }
-  return settings;
+  return normalized;
 }
 
 export async function loadSettings(): Promise<EditorSettings> {

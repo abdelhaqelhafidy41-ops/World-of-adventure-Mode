@@ -1,17 +1,23 @@
 import JSZip from 'jszip';
 import {
+  DEFAULT_GAME_VERSION,
+  MIN_SUPPORTED_GAME_VERSION,
   WOA_COMPATIBLE_PACKAGE_FORMATS,
   WOA_MOD_API_SCHEMA,
   WOA_MOD_API_VERSION,
   WOA_PACKAGE_FORMAT_VERSION,
   buildModCompatibilityInfo,
+  parseGameVersion,
 } from '@/src/core/api/woaModApiSpec';
 import {
   getAssetFormatSpec,
+  getExpectedAssetCategoryForPath,
   inspect3DBuffer,
   inspectAudioBlob,
   inspectImageBlob,
   isSupportedAssetPath,
+  parseAndValidateWoa3dContent,
+  serializeWoa3dAsset,
 } from '@/src/core/assets/assetPipeline';
 import {
   EXTENDED_CONFIG_FILE_PATHS,
@@ -836,7 +842,24 @@ async function runBuildPipeline(
     }
 
     const fileNode = project.files.find((f) => f.path === asset.path);
-    zipEntries.set(archivePath, rewriteAudioRefsToSounds(fileNode?.content ?? ''));
+    let rawContent = fileNode?.content ?? '';
+    if (asset.path.toLowerCase().endsWith('.woa3d')) {
+      try {
+        const parsedWoa3d = parseAndValidateWoa3dContent(rawContent);
+        rawContent = serializeWoa3dAsset({
+          format: 'WOA3D',
+          preset: parsedWoa3d.preset,
+          modCategory: asset.modCategory ?? parsedWoa3d.modCategory,
+          pivotMode: asset.pivotMode ?? parsedWoa3d.pivotMode,
+          collision: asset.collision ?? parsedWoa3d.collision,
+          transform: parsedWoa3d.transform,
+          material: parsedWoa3d.material,
+        });
+      } catch {
+        rawContent = serializeWoa3dAsset(asset);
+      }
+    }
+    zipEntries.set(archivePath, rewriteAudioRefsToSounds(rawContent));
   }
 
   const standardDataFiles = new Set([
@@ -1504,7 +1527,10 @@ export async function importModFromFile(file: File): Promise<ModProject> {
         author: parsed.author || 'Imported Author',
         description: mergedDesc.value,
         descriptionAr: mergedDesc.translations?.ar,
-        supportedGameVersion: parsed.supportedGameVersion || '1.9.x (Current)',
+        supportedGameVersion:
+          typeof parsed.supportedGameVersion === 'string' && parsed.supportedGameVersion.trim()
+            ? parsed.supportedGameVersion.trim()
+            : DEFAULT_GAME_VERSION,
         categories: parsed.categories?.length ? parsed.categories : ['Items'],
       });
     }
@@ -1591,6 +1617,16 @@ export async function importModFromFile(file: File): Promise<ModProject> {
         }
       : undefined;
 
+  const importedGameVersion =
+    typeof rawManifest.supportedGameVersion === 'string'
+      ? rawManifest.supportedGameVersion.trim()
+      : '';
+  const parsedImportedVer = parseGameVersion(importedGameVersion);
+  const defaultImportedMax =
+    parsedImportedVer && parsedImportedVer.major >= 2
+      ? `${parsedImportedVer.major}.x`
+      : '2.x';
+
   const manifest: ModManifest = {
     modId: safeModId,
     name: mergedName.value,
@@ -1598,9 +1634,9 @@ export async function importModFromFile(file: File): Promise<ModProject> {
     author: rawManifest.author || 'Imported Author',
     description: mergedDesc.value,
     ...(manifestTranslations ? { translations: manifestTranslations } : {}),
-    supportedGameVersion: rawManifest.supportedGameVersion || '1.9.x (Current)',
-    minGameVersion: rawManifest.minGameVersion || '1.8.0',
-    maxGameVersion: rawManifest.maxGameVersion || '2.0.x',
+    supportedGameVersion: importedGameVersion,
+    minGameVersion: rawManifest.minGameVersion || MIN_SUPPORTED_GAME_VERSION,
+    maxGameVersion: rawManifest.maxGameVersion || defaultImportedMax,
     modApiVersion: rawManifest.modApiVersion || WOA_MOD_API_VERSION,
     packageFormatVersion:
       rawManifest.packageFormatVersion || WOA_COMPATIBLE_PACKAGE_FORMATS[0],
@@ -1646,12 +1682,60 @@ export async function importModFromFile(file: File): Promise<ModProject> {
       continue;
     }
 
-    if (cleanPath.startsWith('assets/') && !isSupportedAssetPath(cleanPath)) {
-      continue;
+    const spec = getAssetFormatSpec(name);
+    if (cleanPath.startsWith('assets/')) {
+      if (!spec) {
+        continue;
+      }
+      const expectedDirCat = getExpectedAssetCategoryForPath(cleanPath);
+      if (expectedDirCat && expectedDirCat !== spec.category) {
+        throw new Error(
+          `Incompatible asset (${cleanPath}): wrong_category — ${spec.formatLabel} files (${spec.category}) must reside under ${spec.targetDirectory}/.`
+        );
+      }
     }
 
-    const spec = getAssetFormatSpec(name);
     if (spec) {
+      if (spec.ext === 'woa3d') {
+        if (!cleanPath.toLowerCase().startsWith('assets/models/')) {
+          throw new Error(
+            `Incompatible asset (${cleanPath}): wrong_category — WOA3D 3D models must reside under assets/models/.`
+          );
+        }
+        const content = await readZipEntryTextBounded(entry);
+        const parsedWoa3d = parseAndValidateWoa3dContent(content);
+        const assetId = `asset_import_${assets.length + 1}`;
+        assets.push({
+          id: assetId,
+          name: name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' '),
+          path: cleanPath,
+          type: '3d-model',
+          modCategory: parsedWoa3d.modCategory,
+          preset: parsedWoa3d.preset,
+          format: spec.formatLabel,
+          sizeBytes: content.length,
+          triangleEstimate: parsedWoa3d.triangleEstimate,
+          pivotMode: parsedWoa3d.pivotMode,
+          collision: parsedWoa3d.collision,
+          transform: parsedWoa3d.transform,
+          material: parsedWoa3d.material,
+          metadata: { source: 'package-import', imported: true },
+          createdAt: now,
+        });
+
+        files.push({
+          id: `file_${cleanPath}`,
+          name,
+          path: cleanPath,
+          parentPath,
+          type: spec.nodeType,
+          content,
+          assetId,
+          updatedAt: now,
+        });
+        continue;
+      }
+
       const buf = await readZipEntryBufferBounded(entry);
       const assetId = `asset_pkg_${assets.length + 1}_${Date.now().toString().slice(-4)}`;
       const blobKey = `${safeModId}/${assetId}`;
@@ -1727,7 +1811,6 @@ export async function importModFromFile(file: File): Promise<ModProject> {
 
     const content = await readZipEntryTextBounded(entry);
     let nodeType: ModFileNode['type'] = 'data';
-    let assetId: string | undefined;
 
     if (cleanPath === 'mod.manifest.json' || cleanPath === 'mod.json') {
       nodeType = 'manifest';
@@ -1735,44 +1818,6 @@ export async function importModFromFile(file: File): Promise<ModProject> {
       nodeType = 'script';
     } else if (name.endsWith('.md') || name.endsWith('.txt')) {
       nodeType = 'doc';
-    } else if (name.endsWith('.woa3d')) {
-      nodeType = 'asset-3d';
-      assetId = `asset_import_${assets.length + 1}`;
-      let parsedAsset: Partial<{
-        preset: ModAsset['preset'];
-        transform: ModAsset['transform'];
-        material: ModAsset['material'];
-      }> = {};
-      try {
-        parsedAsset = safeJsonParse(content);
-      } catch {
-        // fallback defaults
-      }
-      assets.push({
-        id: assetId,
-        name: name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' '),
-        path: cleanPath,
-        type: '3d-model',
-        preset: parsedAsset.preset ?? 'beacon-pedestal',
-        format: 'WOA3D',
-        sizeBytes: content.length,
-        triangleEstimate: 1180,
-        transform: parsedAsset.transform ?? {
-          position: { x: 0, y: 0, z: 0 },
-          rotation: { x: 0, y: 0, z: 0 },
-          scale: { x: 1, y: 1, z: 1 },
-        },
-        material: parsedAsset.material ?? {
-          color: '#475569',
-          accentColor: '#3B82F6',
-          roughness: 0.35,
-          metalness: 0.65,
-          emissiveIntensity: 0.3,
-          wireframe: false,
-        },
-        metadata: { imported: true },
-        createdAt: now,
-      });
     }
 
     files.push({
@@ -1782,7 +1827,6 @@ export async function importModFromFile(file: File): Promise<ModProject> {
       parentPath,
       type: nodeType,
       content,
-      assetId,
       updatedAt: now,
     });
   }

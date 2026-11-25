@@ -13,7 +13,7 @@
     "lint": "tsc --noEmit",
     "sync:version": "node scripts/sync-version.mjs",
     "electron:build": "node scripts/build-electron.mjs && node scripts/generate-win-icon.mjs",
-    "build:windows": "npm run sync:version && VITE_TARGET=electron VITE_DISABLE_PWA=true vite build && npm run electron:build",
+    "build:windows": "npm run sync:version && set \"VITE_TARGET=electron\" && set \"VITE_DISABLE_PWA=true\" && vite build && npm run electron:build",
     "pack:windows": "npm run build:windows && npx electron-builder --win portable nsis --config electron-builder.yml",
     "android:sync": "npm run sync:version && VITE_TARGET=capacitor VITE_DISABLE_PWA=true vite build && npx cap sync android",
     "test": "npx tsx --test tests/crossPlatform.test.ts"

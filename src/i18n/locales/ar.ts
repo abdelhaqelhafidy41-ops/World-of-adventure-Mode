@@ -2055,7 +2055,7 @@ export const ar: TranslationDictionary = {
   'projects.backupBtn': 'نسخ احتياطي',
   'projects.gameVerBadge': 'اللعبة v{{version}}',
   'projects.lastModifiedLabel': 'آخر تعديل {{date}}',
-  'app.renamedProject': 'تمت إعادة تسمية مشروع التعديل إلى "{{name}}" ({{modId}}).',
+  'projects.renamedNotice': 'تمت إعادة تسمية مشروع التعديل إلى "{{name}}" ({{modId}}).',
   'app.backupCreatedNotice': 'تم إنشاء نسخة احتياطية للمشروع "{{name}}".',
   'app.backupRestoredNotice': 'تمت استعادة المشروع "{{name}}" من النسخة الاحتياطية.',
 } as const;

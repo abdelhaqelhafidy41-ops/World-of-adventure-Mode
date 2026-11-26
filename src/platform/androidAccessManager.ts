@@ -13,7 +13,7 @@ export function sanitizeFolderSegment(raw: string): string {
     .trim()
     .replace(/[^a-zA-Z0-9._-]+/g, '_')
     .replace(/\.{2,}/g, '.')
-    .replace(/^\.+|\.+$/g, '');
+    .replace(/^[._-]+|[._-]+$/g, '');
   return cleaned || 'default_item';
 }
 

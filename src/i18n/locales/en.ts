@@ -2053,7 +2053,7 @@ export const en = {
   'projects.backupBtn': 'Backup',
   'projects.gameVerBadge': 'Game v{{version}}',
   'projects.lastModifiedLabel': 'Modified {{date}}',
-  'app.renamedProject': 'Renamed mod project to "{{name}}" ({{modId}}).',
+  'projects.renamedNotice': 'Renamed mod project to "{{name}}" ({{modId}}).',
   'app.backupCreatedNotice': 'Created backup snapshot for "{{name}}".',
   'app.backupRestoredNotice': 'Restored project "{{name}}" from backup.',
 } as const;

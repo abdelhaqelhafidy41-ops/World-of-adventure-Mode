@@ -38,9 +38,11 @@ import {
 } from '../src/core/project/modScaffolder';
 import {
   exportModArchiveBlob,
+  generateUniqueExportFilename,
   importModFromFile,
   isDevelopmentOnlyPath,
   parseBackupRecordFile,
+  validateBackupRecord,
 } from '../src/core/builder/modBuilder';
 import { validateModProject } from '../src/core/validation/modValidator';
 import {
@@ -48,13 +50,20 @@ import {
   detectRuntimePlatform,
   getPlatformCapabilities,
 } from '../src/platform/detect';
+import { STORAGE_SUBDIRS } from '../src/platform/types';
 import {
+  APP_ROOT_FOLDER_NAME,
   AndroidAccessDeniedError,
   classifyAndroidNativeError,
+  createDefaultStorageConfig,
   detectAndroidStorageCapabilities,
   doesOperationRequireRuntimePermission,
+  formatBackupTimestampFolder,
+  generateUniqueFilename,
   getDefaultDeniedMessage,
   inferImportOperationFromAccept,
+  parseScopedBlobKey,
+  sanitizeFolderSegment,
 } from '../src/platform/androidAccessManager';
 import {
   APP_DISPLAY_NAME,
@@ -709,5 +718,142 @@ test('parseBackupRecordFile safely parses valid .woabackup.json, strips prototyp
     type: 'application/json',
   });
   await assert.rejects(() => parseBackupRecordFile(badBackupFile));
+
+  // Backup integrity checks reject incomplete project payloads directly
+  assert.throws(() =>
+    validateBackupRecord({
+      id: 'bk_missing_name',
+      modId: 'com.test.bad',
+      modName: '',
+      version: '1.0.0',
+      label: 'Bad',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      reason: 'manual',
+      sizeBytes: 10,
+      project: {
+        ...sample,
+        manifest: {
+          ...sample.manifest,
+          name: '   ',
+        },
+      },
+    })
+  );
+  assert.throws(() =>
+    validateBackupRecord({
+      id: 'bk_traversal',
+      modId: '..',
+      modName: 'Bad',
+      version: '1.0.0',
+      label: 'Bad',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      reason: 'manual',
+      sizeBytes: 10,
+      project: {
+        ...sample,
+        manifest: {
+          ...sample.manifest,
+          modId: '..',
+        },
+      },
+    })
+  );
+  assert.throws(() =>
+    validateBackupRecord({
+      id: 'bk_bad_entry',
+      modId: sample.manifest.modId,
+      modName: 'Bad',
+      version: '1.0.0',
+      label: 'Bad',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      reason: 'manual',
+      sizeBytes: 10,
+      project: {
+        ...sample,
+        manifest: {
+          ...sample.manifest,
+          entryPoint: '../evil.ts',
+        },
+      },
+    })
+  );
 });
+
+test('dedicated storage folder layout, scoped asset isolation, backup folder timestamps, and default storage config', () => {
+  assert.equal(APP_ROOT_FOLDER_NAME, 'World of Adventure Mod Creator');
+  for (const requiredDir of ['Projects', 'Exports', 'Backups', 'Assets', 'Settings'] as const) {
+    assert.ok(
+      STORAGE_SUBDIRS.includes(requiredDir),
+      `Expected STORAGE_SUBDIRS to include ${requiredDir}`
+    );
+  }
+
+  const defaultCfg = createDefaultStorageConfig();
+  assert.equal(defaultCfg.safTreeUri, null);
+  assert.equal(defaultCfg.safTreeLabel, null);
+  assert.equal(defaultCfg.folderAccessValid, false);
+  assert.equal(defaultCfg.folderAccessRevoked, false);
+  assert.equal(defaultCfg.firstTimeSetupPrompted, false);
+  assert.equal(defaultCfg.lastOpenedProjectId, null);
+  assert.equal(defaultCfg.defaultExportMode, 'dedicated-folder');
+  assert.equal(defaultCfg.exportConflictPolicy, 'ask');
+  assert.equal(defaultCfg.autoBackupOnBuild, true);
+
+  assert.equal(sanitizeFolderSegment('../Skyreach Relics!!'), 'Skyreach_Relics');
+  assert.equal(sanitizeFolderSegment('   '), 'default_item');
+
+  // Assets for two different mods stay isolated under Assets/<safeModId>/
+  const modA = parseScopedBlobKey('com.author.mod_a/sword_albedo.png');
+  const modB = parseScopedBlobKey('com.author.mod_b/sword_albedo.png');
+  assert.equal(modA.projectSegment, 'com.author.mod_a');
+  assert.equal(modB.projectSegment, 'com.author.mod_b');
+  assert.notEqual(modA.projectSegment, modB.projectSegment);
+  assert.equal(modA.assetSegment, 'sword_albedo.png');
+
+  const legacyBlob = parseScopedBlobKey('legacy_texture.png');
+  assert.equal(legacyBlob.projectSegment, null);
+  assert.equal(legacyBlob.assetSegment, 'legacy_texture.png');
+
+  const backupFolder = formatBackupTimestampFolder('2026-11-26T14:05:00');
+  assert.match(backupFolder, /^backup-\d{4}-\d{2}-\d{2}-\d{4}$/);
+  assert.equal(backupFolder, 'backup-2026-11-26-1405');
+});
+
+test('generateUniqueFilename and generateUniqueExportFilename avoid collisions cleanly', async () => {
+  const existing = new Set(['Skyreach-Relics.woamod', 'Skyreach-Relics (2).woamod']);
+  const nextExportName = await generateUniqueExportFilename('Skyreach-Relics.woamod', (name) =>
+    existing.has(name)
+  );
+  assert.equal(nextExportName, 'Skyreach-Relics (3).woamod');
+
+  const freshName = await generateUniqueFilename('NewMod.woamod', (name) => existing.has(name));
+  assert.equal(freshName, 'NewMod.woamod');
+});
+
+test('Android WoaStoragePlugin native SAF dedicated folder methods, atomic temp staging, and revocation tracking exist without extra permissions', () => {
+  const rootDir = process.cwd();
+  const pluginJava = fs.readFileSync(
+    path.join(rootDir, 'android/app/src/main/java/com/woa/modcreator/WoaStoragePlugin.java'),
+    'utf8'
+  );
+
+  assert.match(pluginJava, /World of Adventure Mod Creator/);
+  assert.match(pluginJava, /"Projects",\s*"Exports",\s*"Backups",\s*"Assets",\s*"Settings"/);
+  assert.match(pluginJava, /PREF_SAF_REVOKED/);
+  assert.match(pluginJava, /TEMP_SUFFIX\s*=\s*"\.woatmp"/);
+  for (const methodName of [
+    'checkDirectoryAccess',
+    'ensureAppFolderStructure',
+    'readTreeFile',
+    'treeEntryExists',
+    'deleteTreeEntry',
+    'renameTreeEntry',
+    'listTreeEntries',
+    'openTreeSubfolder',
+    'writeFileToTree',
+  ]) {
+    assert.match(pluginJava, new RegExp(`public\\s+void\\s+${methodName}\\s*\\(`));
+  }
+});
+
 

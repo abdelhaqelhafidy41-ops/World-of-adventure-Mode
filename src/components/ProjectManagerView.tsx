@@ -14,7 +14,7 @@ import {
   Upload,
 } from 'lucide-react';
 import { ContextMenu, ContextMenuItem } from '@/src/components/common/ContextMenu';
-import { validateModId } from '@/src/core/validation/modValidator';
+import { validateModId } from '@/src/core/project/modScaffolder';
 import { useI18n } from '@/src/i18n';
 import {
   AndroidAccessDeniedError,
@@ -192,7 +192,7 @@ export const ProjectManagerView: React.FC<ProjectManagerViewProps> = ({
     await onRenameProject(renameTarget, cleanName, cleanModId);
     setRenameTarget(null);
     setActionNotice(
-      t('app.renamedProject', { name: cleanName, modId: cleanModId })
+      t('projects.renamedNotice', { name: cleanName, modId: cleanModId })
     );
   };
 

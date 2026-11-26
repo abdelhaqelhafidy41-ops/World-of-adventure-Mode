@@ -330,39 +330,24 @@ async function writeProjectFolderStructure(project: ModProject): Promise<void> {
         name: project.manifest.name,
         version: project.manifest.version,
         supportedGameVersion: project.manifest.supportedGameVersion,
-        targetPlatform: project.manifest.targetPlatform,
+        targetPlatforms: project.manifest.targetPlatforms,
         lastOpenedAt: project.lastOpenedAt,
       },
       null,
       2
     )
   );
-  await atomicWriteFile(
-    resolveConfined('Projects', safeFolder, 'data', 'content.json'),
-    JSON.stringify(
-      {
-        items: project.items,
-        blocks: project.blocks,
-        recipes: project.recipes,
-        entities: project.entities,
-        quests: project.quests,
-        biomes: project.biomes,
-        structures: project.structures,
-      },
-      null,
-      2
-    )
-  );
-  await atomicWriteFile(
-    resolveConfined('Projects', safeFolder, 'localization', 'strings.json'),
-    JSON.stringify(project.localization ?? [], null, 2)
-  );
-  for (const script of project.scripts ?? []) {
-    const scriptName = sanitizeSegment(script.name || `${script.id}.ts`);
-    await atomicWriteFile(
-      resolveConfined('Projects', safeFolder, 'scripts', scriptName),
-      script.content ?? ''
-    );
+  for (const fileNode of project.files ?? []) {
+    if (fileNode.type === 'folder' || typeof fileNode.content !== 'string') continue;
+    const rel = fileNode.path.replace(/\\/g, '/').replace(/^\/+/, '');
+    if (!rel || rel.includes('..') || rel === 'mod.json' || rel === 'mod.manifest.json') {
+      continue;
+    }
+    const relParts = rel.split('/').filter(Boolean);
+    if (relParts.length === 0) continue;
+    const dest = resolveConfined('Projects', safeFolder, ...relParts);
+    await fs.mkdir(path.dirname(dest), { recursive: true });
+    await atomicWriteFile(dest, fileNode.content);
   }
 }
 

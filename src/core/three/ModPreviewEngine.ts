@@ -27,6 +27,7 @@ import {
 
 export type CameraPreset = 'perspective' | 'front' | 'side' | 'top' | 'iso';
 export type GizmoMode = 'select' | 'translate' | 'rotate' | 'scale';
+export type AxisConstraint = 'x' | 'y' | 'z' | null;
 
 export interface ModelInspectionResult {
   assetId: string;
@@ -123,6 +124,9 @@ const _tempVec = new THREE.Vector3();
 const _tempQuat = new THREE.Quaternion();
 const _tempScale = new THREE.Vector3();
 const _tempMatrix = new THREE.Matrix4();
+const _gizmoDeltaPos = new THREE.Vector3();
+const _gizmoDeltaQuat = new THREE.Quaternion();
+const _gizmoInvQuat = new THREE.Quaternion();
 
 function detectSoftwareGl(): boolean {
   try {
@@ -280,6 +284,14 @@ export class ModPreviewEngine {
   private rootMirror = { x: false, y: false, z: false };
   private customIdCounter = 0;
   private gizmoMode: GizmoMode = 'select';
+  private axisConstraint: AxisConstraint = null;
+  private dragSnapshots: Array<{
+    obj: THREE.Object3D;
+    pos: THREE.Vector3;
+    quat: THREE.Quaternion;
+    scale: THREE.Vector3;
+  }> = [];
+  private dragCanceled = false;
 
   // Animation playback
   private mixer: THREE.AnimationMixer | null = null;
@@ -483,14 +495,82 @@ export class ModPreviewEngine {
     this.transformControls.enabled = false;
 
     this.transformControls.addEventListener('dragging-changed', (event) => {
-      this.orbit.enabled = !event.value;
-      if (!event.value && this.activeGroup) {
-        if (!this.selectedNodeId) {
-          this.emitTransformUpdate();
-        } else {
-          this.emitHierarchyChanged();
+      const isDragging = Boolean(event.value);
+      this.orbit.enabled = !isDragging;
+      if (isDragging) {
+        this.dragCanceled = false;
+        this.dragSnapshots = [];
+        if (this.selectedNodeIds.length > 0 && this.selectedNodeId) {
+          const ordered = [
+            this.selectedNodeId,
+            ...this.selectedNodeIds.filter((id) => id !== this.selectedNodeId),
+          ];
+          for (const id of ordered) {
+            const obj = this.nodeById.get(id);
+            if (obj && !obj.userData.__locked) {
+              this.dragSnapshots.push({
+                obj,
+                pos: obj.position.clone(),
+                quat: obj.quaternion.clone(),
+                scale: obj.scale.clone(),
+              });
+            }
+          }
+        } else if (this.activeGroup && !this.activeRootLocked) {
+          this.dragSnapshots.push({
+            obj: this.activeGroup,
+            pos: this.activeGroup.position.clone(),
+            quat: this.activeGroup.quaternion.clone(),
+            scale: this.activeGroup.scale.clone(),
+          });
         }
-        this.refreshHelpers();
+      } else {
+        const wasCanceled = this.dragCanceled;
+        this.dragCanceled = false;
+        this.dragSnapshots = [];
+        if (!wasCanceled && this.activeGroup) {
+          if (!this.selectedNodeId) {
+            this.emitTransformUpdate();
+          } else {
+            this.emitHierarchyChanged();
+          }
+          this.refreshHelpers();
+        }
+      }
+    });
+    this.transformControls.addEventListener('objectChange', () => {
+      if (
+        this.transformControls.dragging &&
+        !this.dragCanceled &&
+        this.dragSnapshots.length > 1
+      ) {
+        const primary = this.dragSnapshots[0];
+        _gizmoDeltaPos.copy(primary.obj.position).sub(primary.pos);
+        _gizmoInvQuat.copy(primary.quat).invert();
+        _gizmoDeltaQuat.copy(primary.obj.quaternion).multiply(_gizmoInvQuat);
+        const rx =
+          Math.abs(primary.scale.x) > 1e-6
+            ? primary.obj.scale.x / primary.scale.x
+            : 1;
+        const ry =
+          Math.abs(primary.scale.y) > 1e-6
+            ? primary.obj.scale.y / primary.scale.y
+            : 1;
+        const rz =
+          Math.abs(primary.scale.z) > 1e-6
+            ? primary.obj.scale.z / primary.scale.z
+            : 1;
+
+        for (let i = 1; i < this.dragSnapshots.length; i++) {
+          const snap = this.dragSnapshots[i];
+          snap.obj.position.copy(snap.pos).add(_gizmoDeltaPos);
+          snap.obj.quaternion.copy(_gizmoDeltaQuat).multiply(snap.quat);
+          snap.obj.scale.set(
+            snap.scale.x * rx,
+            snap.scale.y * ry,
+            snap.scale.z * rz
+          );
+        }
       }
     });
     this.transformControls.addEventListener('change', () => {
@@ -897,6 +977,35 @@ export class ModPreviewEngine {
     this.requestRender();
   }
 
+  public setAxisConstraint(axis: AxisConstraint): void {
+    this.axisConstraint = axis;
+    this.transformControls.showX = axis === null || axis === 'x';
+    this.transformControls.showY = axis === null || axis === 'y';
+    this.transformControls.showZ = axis === null || axis === 'z';
+    this.requestRender();
+  }
+
+  public cancelActiveTransform(): boolean {
+    if (!this.transformControls.dragging || this.dragSnapshots.length === 0) {
+      return false;
+    }
+    this.dragCanceled = true;
+    for (const snap of this.dragSnapshots) {
+      snap.obj.position.copy(snap.pos);
+      snap.obj.quaternion.copy(snap.quat);
+      snap.obj.scale.copy(snap.scale);
+    }
+    const attached = this.transformControls.object;
+    this.transformControls.detach();
+    if (attached && this.gizmoMode !== 'select' && !this.isTargetLocked()) {
+      this.transformControls.attach(attached);
+    }
+    this.orbit.enabled = true;
+    this.refreshHelpers();
+    this.requestRender();
+    return true;
+  }
+
   private isTargetLocked(): boolean {
     if (this.selectedNodeIds.length > 0) {
       return this.selectedNodeIds.some((id) => {
@@ -922,6 +1031,12 @@ export class ModPreviewEngine {
       this.transformControls.enabled = true;
       helper.visible = true;
       this.transformControls.setMode(this.gizmoMode);
+      this.transformControls.showX =
+        this.axisConstraint === null || this.axisConstraint === 'x';
+      this.transformControls.showY =
+        this.axisConstraint === null || this.axisConstraint === 'y';
+      this.transformControls.showZ =
+        this.axisConstraint === null || this.axisConstraint === 'z';
       this.transformControls.attach(target);
     }
   }
@@ -2091,6 +2206,9 @@ export class ModPreviewEngine {
 
     if (this.activeLoadedKey !== loadKey || !this.activeGroup || needsSceneStateRebuild) {
       const wasSameAssetReload = needsSceneStateRebuild;
+      const prevSelectedIds = wasSameAssetReload ? [...this.selectedNodeIds] : [];
+      const prevPrimaryId = wasSameAssetReload ? this.selectedNodeId : null;
+      const prevCleared = wasSameAssetReload ? this.selectionCleared : false;
       this.clearActiveModel();
 
       if (asset.blobKey) {
@@ -2132,23 +2250,13 @@ export class ModPreviewEngine {
           const hierarchy = this.buildHierarchyTree(loaded);
           this.updateFramingFromObject(group);
 
-          if (!wasSameAssetReload) {
-            this.callbacks.onModelInspected?.({
-              assetId: asset.id,
-              dimensions: stats.dimensions,
-              triangleEstimate: stats.triangleEstimate,
-              materials: stats.materials,
-              hierarchy,
-            });
-          } else {
-            this.callbacks.onModelInspected?.({
-              assetId: asset.id,
-              dimensions: stats.dimensions,
-              triangleEstimate: stats.triangleEstimate,
-              materials: stats.materials,
-              hierarchy,
-            });
-          }
+          this.callbacks.onModelInspected?.({
+            assetId: asset.id,
+            dimensions: stats.dimensions,
+            triangleEstimate: stats.triangleEstimate,
+            materials: stats.materials,
+            hierarchy,
+          });
         } catch (err) {
           this.callbacks.onLoadError?.(
             err instanceof Error ? err.message : t('core.previewUnable3D')
@@ -2193,6 +2301,16 @@ export class ModPreviewEngine {
           materials: stats.materials,
           hierarchy,
         });
+      }
+
+      if (wasSameAssetReload) {
+        const validIds = prevSelectedIds.filter((id) => this.nodeById.has(id));
+        this.selectionCleared = prevCleared && validIds.length === 0;
+        this.selectedNodeIds = validIds;
+        this.selectedNodeId =
+          prevPrimaryId && validIds.includes(prevPrimaryId)
+            ? prevPrimaryId
+            : validIds[validIds.length - 1] ?? null;
       }
 
       if (this.materialMode !== 'pbr') {

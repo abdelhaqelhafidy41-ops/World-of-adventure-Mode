@@ -79,6 +79,7 @@ interface WorkspaceViewProps {
   pendingIssueFocus?: { issue: ValidationIssue; token: number } | null;
   canUndo: boolean;
   canRedo: boolean;
+  hasUnsavedChanges?: boolean;
   lastSavedAt: string | null;
   onUndo: () => void;
   onRedo: () => void;
@@ -86,7 +87,11 @@ interface WorkspaceViewProps {
   onOpenBuild?: () => void;
   onUpdateSettings: (patch: Partial<EditorSettings>) => void;
   onSelectAsset: (assetId: string) => void;
-  onUpdateAsset: (assetId: string, patch: Partial<ModAsset>) => void;
+  onUpdateAsset: (
+    assetId: string,
+    patch: Partial<ModAsset>,
+    options?: { recordUndo?: boolean; historyGroupKey?: string }
+  ) => void;
   onUpdateContents: (next: ModContentDatabase) => void;
   onImportAssetFiles: (files: FileList | File[]) => Promise<void>;
   onAddProceduralAsset: (name: string, preset: AssetPresetKind) => void;
@@ -168,6 +173,7 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
   pendingIssueFocus,
   canUndo,
   canRedo,
+  hasUnsavedChanges = false,
   lastSavedAt,
   onUndo,
   onRedo,
@@ -486,11 +492,15 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
       (current.extractedMaterials?.length ?? 0) === info.materials.length;
 
     if (!sameDims || !sameTris || !sameMats) {
-      onUpdateAsset(info.assetId, {
-        dimensions: info.dimensions,
-        triangleEstimate: info.triangleEstimate,
-        extractedMaterials: info.materials,
-      });
+      onUpdateAsset(
+        info.assetId,
+        {
+          dimensions: info.dimensions,
+          triangleEstimate: info.triangleEstimate,
+          extractedMaterials: info.materials,
+        },
+        { recordUndo: false }
+      );
     }
   };
 
@@ -886,11 +896,13 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                 <span className="hidden xl:inline">{t('workspace.snapshotBtn')}</span>
               </button>
               <span className="hidden 2xl:inline-block text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400 ps-1">
-                {settings.autoSave
-                  ? lastSavedAt
-                    ? t('workspace.autosavedAt', { time: lastSavedAt })
-                    : t('workspace.autosaveOn')
-                  : t('workspace.autosaveOff')}
+                {hasUnsavedChanges
+                  ? t('nav.unsaved')
+                  : settings.autoSave
+                    ? lastSavedAt
+                      ? t('workspace.autosavedAt', { time: lastSavedAt })
+                      : t('workspace.autosaveOn')
+                    : t('workspace.savedBadge')}
               </span>
               <button
                 type="button"
@@ -929,6 +941,11 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                   showPivot={showPivot}
                   lightingPreset={lightingPreset}
                   materialMode={materialMode}
+                  canUndo={canUndo}
+                  canRedo={canRedo}
+                  isViewportActive={centerTab === 'viewport'}
+                  onUndo={onUndo}
+                  onRedo={onRedo}
                   onToggleBounds={() => setShowBounds((v) => !v)}
                   onToggleCollision={() => setShowCollision((v) => !v)}
                   onTogglePivot={() => setShowPivot((v) => !v)}

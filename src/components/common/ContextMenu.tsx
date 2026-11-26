@@ -49,6 +49,7 @@ interface SubmenuPanelProps {
   entries: ContextMenuEntry[];
   parentRect: DOMRect;
   isRtl: boolean;
+  registerEscapeHandler?: (fn: (() => boolean) | null) => void;
   onClose: () => void;
 }
 
@@ -56,15 +57,33 @@ const SubmenuPanel: React.FC<SubmenuPanelProps> = ({
   entries,
   parentRect,
   isRtl,
+  registerEscapeHandler,
   onClose,
 }) => {
   const subRef = useRef<HTMLDivElement>(null);
+  const childEscapeRef = useRef<(() => boolean) | null>(null);
   const [nestedOpenId, setNestedOpenId] = useState<string | null>(null);
   const [nestedRect, setNestedRect] = useState<DOMRect | null>(null);
   const [pos, setPos] = useState<{ left: number; top: number }>({
     left: isRtl ? parentRect.left - 220 : parentRect.right - 2,
     top: parentRect.top,
   });
+
+  useEffect(() => {
+    if (!registerEscapeHandler) return;
+    registerEscapeHandler(() => {
+      if (childEscapeRef.current?.()) return true;
+      if (nestedOpenId) {
+        setNestedOpenId(null);
+        setNestedRect(null);
+        return true;
+      }
+      return false;
+    });
+    return () => {
+      registerEscapeHandler(null);
+    };
+  }, [registerEscapeHandler, nestedOpenId]);
 
   useLayoutEffect(() => {
     const el = subRef.current;
@@ -197,6 +216,9 @@ const SubmenuPanel: React.FC<SubmenuPanelProps> = ({
                 entries={entry.children}
                 parentRect={nestedRect}
                 isRtl={isRtl}
+                registerEscapeHandler={(fn) => {
+                  childEscapeRef.current = fn;
+                }}
                 onClose={onClose}
               />
             )}
@@ -216,6 +238,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   onClose,
 }) => {
   const menuRef = useRef<HTMLDivElement>(null);
+  const submenuEscapeRef = useRef<(() => boolean) | null>(null);
   const [coords, setCoords] = useState({ left: x, top: y });
   const [activeSubmenuId, setActiveSubmenuId] = useState<string | null>(null);
   const [activeSubmenuRect, setActiveSubmenuRect] = useState<DOMRect | null>(null);
@@ -255,6 +278,14 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
       if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
+        if (submenuEscapeRef.current?.()) {
+          return;
+        }
+        if (activeSubmenuId) {
+          setActiveSubmenuId(null);
+          setActiveSubmenuRect(null);
+          return;
+        }
         onClose();
       }
     };
@@ -268,7 +299,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
       window.removeEventListener('keydown', handleKeyDown, true);
       window.removeEventListener('resize', handleResize);
     };
-  }, [open, onClose]);
+  }, [open, onClose, activeSubmenuId]);
 
   if (!open || items.length === 0) return null;
 
@@ -417,6 +448,9 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
           entries={activeSubmenuEntry.children}
           parentRect={activeSubmenuRect}
           isRtl={isRtl}
+          registerEscapeHandler={(fn) => {
+            submenuEscapeRef.current = fn;
+          }}
           onClose={onClose}
         />
       )}

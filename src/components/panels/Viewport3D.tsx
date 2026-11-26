@@ -38,6 +38,7 @@ import {
   Palette,
   Pencil,
   Play,
+  Redo2,
   RefreshCw,
   RotateCcw,
   RotateCw,
@@ -50,6 +51,7 @@ import {
   Sun,
   Target,
   Trash2,
+  Undo2,
   Ungroup,
   Unlink,
   Unlock,
@@ -65,6 +67,7 @@ import {
 } from '@/src/components/common/ContextMenu';
 import { getAssetBlobRecord } from '@/src/core/storage/modRepository';
 import {
+  AxisConstraint,
   CameraPreset,
   ClipboardNodeEntry,
   ContextMenuRequestPayload,
@@ -75,7 +78,7 @@ import {
   NodeInspectionDetails,
 } from '@/src/core/three/ModPreviewEngine';
 import { useI18n } from '@/src/i18n';
-import { usePlatform } from '@/src/platform';
+import { detectIsMacOS, usePlatform } from '@/src/platform';
 import {
   AssetTransform,
   EditorSettings,
@@ -116,6 +119,11 @@ interface Viewport3DProps {
   showPivot: boolean;
   lightingPreset: LightingPreset;
   materialMode: MaterialPreviewMode;
+  canUndo?: boolean;
+  canRedo?: boolean;
+  isViewportActive?: boolean;
+  onUndo?: () => void;
+  onRedo?: () => void;
   onToggleBounds: () => void;
   onToggleCollision: () => void;
   onTogglePivot: () => void;
@@ -128,7 +136,11 @@ interface Viewport3DProps {
     cleared?: boolean
   ) => void;
   onUpdateSettings: (patch: Partial<EditorSettings>) => void;
-  onUpdateAsset?: (assetId: string, patch: Partial<ModAsset>) => void;
+  onUpdateAsset?: (
+    assetId: string,
+    patch: Partial<ModAsset>,
+    options?: { recordUndo?: boolean; historyGroupKey?: string }
+  ) => void;
   onUpdateContents?: (next: ModContentDatabase) => void;
   onRenameAsset?: (assetId: string, newName: string) => void;
   onDuplicateAsset?: (assetId: string) => Promise<void>;
@@ -227,6 +239,11 @@ export const Viewport3D = React.forwardRef<Viewport3DHandle, Viewport3DProps>(
       showPivot,
       lightingPreset,
       materialMode,
+      canUndo = false,
+      canRedo = false,
+      isViewportActive = true,
+      onUndo,
+      onRedo,
       onToggleBounds,
       onToggleCollision,
       onTogglePivot,
@@ -267,6 +284,7 @@ export const Viewport3D = React.forwardRef<Viewport3DHandle, Viewport3DProps>(
     const tRef = useRef(t);
 
     const [gizmoMode, setGizmoMode] = useState<GizmoMode>('select');
+    const [axisConstraint, setAxisConstraint] = useState<AxisConstraint>(null);
     const [cameraPreset, setCameraPreset] = useState<CameraPreset>('perspective');
     const [autoRotate, setAutoRotate] = useState(false);
     const [contextLost, setContextLost] = useState(false);
@@ -319,10 +337,10 @@ export const Viewport3D = React.forwardRef<Viewport3DHandle, Viewport3DProps>(
       [selectionCleared, selectedNodeIds, selectedNodeId]
     );
 
-    const isMac =
-      typeof navigator !== 'undefined' &&
-      /Mac|iPhone|iPad/i.test(navigator.platform || '');
+    const isMac = detectIsMacOS();
     const modKey = isMac ? '⌘' : 'Ctrl+';
+    const undoShortcut = isMac ? '⌘Z' : 'Ctrl+Z';
+    const redoShortcut = isMac ? '⇧⌘Z' : 'Ctrl+Y';
 
     const dispatchSelection = useCallback(
       (nodeIds: string[], primaryId: string | null, cleared = false) => {
@@ -528,7 +546,18 @@ export const Viewport3D = React.forwardRef<Viewport3DHandle, Viewport3DProps>(
 
     useEffect(() => {
       engineRef.current?.setGizmoMode(gizmoMode);
+      if (gizmoMode === 'select') {
+        setAxisConstraint(null);
+      }
     }, [gizmoMode]);
+
+    useEffect(() => {
+      engineRef.current?.setAxisConstraint(axisConstraint);
+    }, [axisConstraint]);
+
+    useEffect(() => {
+      setAxisConstraint(null);
+    }, [asset?.id]);
 
     useEffect(() => {
       engineRef.current?.setAutoRotate(autoRotate);
@@ -917,18 +946,25 @@ export const Viewport3D = React.forwardRef<Viewport3DHandle, Viewport3DProps>(
     // ---- Keyboard Shortcuts inside 3D Viewport ----
     useEffect(() => {
       const onKeyDown = (e: KeyboardEvent) => {
-        if (!asset || asset.type !== '3d-model') return;
+        if (!isViewportActive || !asset || asset.type !== '3d-model') return;
         const target = e.target as HTMLElement | null;
         const tag = target?.tagName ?? '';
         if (
           tag === 'INPUT' ||
           tag === 'TEXTAREA' ||
           tag === 'SELECT' ||
-          target?.isContentEditable
+          target?.isContentEditable ||
+          Boolean(target?.closest?.('[contenteditable="true"]'))
         ) {
           return;
         }
-        if (activeModal) return;
+        if (
+          activeModal ||
+          target?.closest?.('[role="dialog"], [aria-modal="true"]') ||
+          document.querySelector('[role="dialog"], [aria-modal="true"]')
+        ) {
+          return;
+        }
 
         const key = e.key.toLowerCase();
         const hasMod = e.ctrlKey || e.metaKey;
@@ -981,20 +1017,52 @@ export const Viewport3D = React.forwardRef<Viewport3DHandle, Viewport3DProps>(
           if (key === 'g') {
             e.preventDefault();
             setGizmoMode('translate');
+            setAxisConstraint(null);
             return;
           }
           if (key === 'r') {
             e.preventDefault();
             setGizmoMode('rotate');
+            setAxisConstraint(null);
             return;
           }
           if (key === 's') {
             e.preventDefault();
             setGizmoMode('scale');
+            setAxisConstraint(null);
+            return;
+          }
+          if ((key === 'x' || key === 'y' || key === 'z') && gizmoMode !== 'select') {
+            e.preventDefault();
+            const axis = key as 'x' | 'y' | 'z';
+            setAxisConstraint((prev) => (prev === axis ? null : axis));
+            return;
+          }
+          if (e.key === 'Enter' && (gizmoMode !== 'select' || axisConstraint !== null)) {
+            e.preventDefault();
+            setAxisConstraint(null);
             return;
           }
           if (e.key === 'Escape' && !ctxMenu.open) {
-            dispatchSelection([], null, true);
+            if (engineRef.current?.cancelActiveTransform()) {
+              e.preventDefault();
+              setAxisConstraint(null);
+              return;
+            }
+            if (axisConstraint !== null) {
+              e.preventDefault();
+              setAxisConstraint(null);
+              return;
+            }
+            if (gizmoMode !== 'select') {
+              e.preventDefault();
+              setGizmoMode('select');
+              return;
+            }
+            if (!selectionCleared) {
+              e.preventDefault();
+              dispatchSelection([], null, true);
+            }
           }
         }
       };
@@ -1004,15 +1072,18 @@ export const Viewport3D = React.forwardRef<Viewport3DHandle, Viewport3DProps>(
     }, [
       activeModal,
       asset,
+      axisConstraint,
       ctxMenu.open,
       dispatchSelection,
       effectiveSelectedIds,
+      gizmoMode,
       handleCopySelection,
       handleCutSelection,
       handleDeleteSelection,
       handleDuplicateSelection,
       handleOpenRename,
       handlePasteClipboard,
+      isViewportActive,
       selectionCleared,
     ]);
 
@@ -1033,6 +1104,23 @@ export const Viewport3D = React.forwardRef<Viewport3DHandle, Viewport3DProps>(
 
       if (mode === 'empty') {
         const items: ContextMenuEntry[] = [
+          {
+            id: 'undo-empty',
+            label: t('ctx3d.undo'),
+            shortcut: undoShortcut,
+            disabled: !canUndo,
+            icon: <Undo2 className="w-3.5 h-3.5" />,
+            onSelect: () => onUndo?.(),
+          },
+          {
+            id: 'redo-empty',
+            label: t('ctx3d.redo'),
+            shortcut: redoShortcut,
+            disabled: !canRedo,
+            icon: <Redo2 className="w-3.5 h-3.5" />,
+            onSelect: () => onRedo?.(),
+          },
+          { id: 'sep-empty-hist', type: 'separator' },
           {
             id: 'select-root',
             label: t('ctx3d.selectRoot'),
@@ -1139,6 +1227,24 @@ export const Viewport3D = React.forwardRef<Viewport3DHandle, Viewport3DProps>(
           onSelect: () => handleOpenRename(isRoot ? 'root' : 'node', primaryId),
         });
       }
+      entries.push({ id: 'sep-hist', type: 'separator' });
+      entries.push({
+        id: 'undo-action',
+        label: t('ctx3d.undo'),
+        shortcut: undoShortcut,
+        disabled: !canUndo,
+        icon: <Undo2 className="w-3.5 h-3.5" />,
+        onSelect: () => onUndo?.(),
+      });
+      entries.push({
+        id: 'redo-action',
+        label: t('ctx3d.redo'),
+        shortcut: redoShortcut,
+        disabled: !canRedo,
+        icon: <Redo2 className="w-3.5 h-3.5" />,
+        onSelect: () => onRedo?.(),
+      });
+      entries.push({ id: 'sep-clip', type: 'separator' });
       entries.push({
         id: 'duplicate',
         label: t('ctx3d.duplicate'),
@@ -1881,7 +1987,7 @@ export const Viewport3D = React.forwardRef<Viewport3DHandle, Viewport3DProps>(
         entries.push({
           id: 'delete-obj',
           label: t('ctx3d.delete'),
-          shortcut: 'Del',
+          shortcut: 'Delete',
           danger: true,
           disabled: isLocked,
           icon: <Trash2 className="w-3.5 h-3.5" />,
@@ -1895,6 +2001,8 @@ export const Viewport3D = React.forwardRef<Viewport3DHandle, Viewport3DProps>(
       animations,
       anyHiddenInScene,
       asset,
+      canRedo,
+      canUndo,
       clipboard,
       contents,
       ctxMenu,
@@ -1914,12 +2022,16 @@ export const Viewport3D = React.forwardRef<Viewport3DHandle, Viewport3DProps>(
       onLog,
       onOpenInspector,
       onOpenTextureAsset,
+      onRedo,
       onReplaceAsset,
       onRevealAssetInBrowser,
+      onUndo,
       onUpdateAsset,
       onUpdateContents,
+      redoShortcut,
       t,
       textureAssets.length,
+      undoShortcut,
     ]);
 
     const handleCameraPreset = (preset: CameraPreset) => {
@@ -1999,6 +2111,32 @@ export const Viewport3D = React.forwardRef<Viewport3DHandle, Viewport3DProps>(
             >
               <Magnet className="w-3.5 h-3.5" />
               <span className="hidden xl:inline">{t('viewport.snapLabel')}</span>
+            </button>
+
+            <span className="w-px h-4 bg-slate-200 dark:bg-white/10 mx-1" />
+
+            <button
+              type="button"
+              disabled={!canUndo}
+              onClick={() => onUndo?.()}
+              title={t('viewport.undoTooltip', { shortcut: undoShortcut })}
+              aria-label={t('viewport.undoBtn')}
+              className="inline-flex items-center justify-center gap-1 px-2.5 py-1.5 sm:py-1 min-h-[36px] sm:min-h-0 touch-target text-xs font-medium rounded border border-slate-200 dark:border-white/10 text-slate-700 hover:text-slate-900 hover:bg-slate-100 dark:text-slate-200 dark:hover:text-white dark:hover:bg-white/10 disabled:opacity-35 disabled:cursor-not-allowed transition-colors whitespace-nowrap shrink-0"
+            >
+              <span aria-hidden="true" className="text-sm leading-none">↶</span>
+              <span>{t('viewport.undoBtn')}</span>
+            </button>
+
+            <button
+              type="button"
+              disabled={!canRedo}
+              onClick={() => onRedo?.()}
+              title={t('viewport.redoTooltip', { shortcut: redoShortcut })}
+              aria-label={t('viewport.redoBtn')}
+              className="inline-flex items-center justify-center gap-1 px-2.5 py-1.5 sm:py-1 min-h-[36px] sm:min-h-0 touch-target text-xs font-medium rounded border border-slate-200 dark:border-white/10 text-slate-700 hover:text-slate-900 hover:bg-slate-100 dark:text-slate-200 dark:hover:text-white dark:hover:bg-white/10 disabled:opacity-35 disabled:cursor-not-allowed transition-colors whitespace-nowrap shrink-0"
+            >
+              <span aria-hidden="true" className="text-sm leading-none">↷</span>
+              <span>{t('viewport.redoBtn')}</span>
             </button>
           </div>
 
@@ -2218,6 +2356,45 @@ export const Viewport3D = React.forwardRef<Viewport3DHandle, Viewport3DProps>(
           onContextMenu={(e) => e.preventDefault()}
         >
           <div ref={mountRef} className="w-full h-full touch-pan-canvas" />
+
+          {asset && asset.type === '3d-model' && gizmoMode !== 'select' && (
+            <div
+              dir="auto"
+              className="pointer-events-none hidden sm:flex items-center gap-2 absolute top-3 start-3 px-2.5 py-1 rounded bg-[#0B0F17]/90 border border-white/15 text-[11px] text-slate-200"
+            >
+              <span className="font-semibold text-blue-400">
+                {gizmoMode === 'translate'
+                  ? t('ctx3d.move')
+                  : gizmoMode === 'rotate'
+                    ? t('ctx3d.rotate')
+                    : t('ctx3d.scale')}
+              </span>
+              <span className="text-white/30">·</span>
+              <span
+                className={
+                  axisConstraint === 'x'
+                    ? 'font-mono font-semibold text-red-400'
+                    : axisConstraint === 'y'
+                      ? 'font-mono font-semibold text-emerald-400'
+                      : axisConstraint === 'z'
+                        ? 'font-mono font-semibold text-sky-400'
+                        : 'text-slate-300'
+                }
+              >
+                {axisConstraint === 'x'
+                  ? t('viewport.axisX')
+                  : axisConstraint === 'y'
+                    ? t('viewport.axisY')
+                    : axisConstraint === 'z'
+                      ? t('viewport.axisZ')
+                      : t('viewport.axisAll')}
+              </span>
+              <span className="text-white/30">·</span>
+              <span className="text-[10px] text-slate-400">
+                {t('viewport.transformHint')}
+              </span>
+            </div>
+          )}
 
           <div
             dir="auto"

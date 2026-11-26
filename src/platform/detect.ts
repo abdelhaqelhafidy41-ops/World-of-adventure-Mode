@@ -44,6 +44,14 @@ export function detectIsTouchPrimary(): boolean {
   }
 }
 
+export function detectIsMacOS(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
+  const platform = nav.userAgentData?.platform || navigator.platform || '';
+  if (/Mac|iPhone|iPad|iPod/i.test(platform)) return true;
+  return /Macintosh|Mac OS X/i.test(navigator.userAgent || '');
+}
+
 export function detectFormFactor(
   viewportWidth: number,
   platform: RuntimePlatform,

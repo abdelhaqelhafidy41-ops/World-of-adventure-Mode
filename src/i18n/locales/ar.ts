@@ -2209,5 +2209,17 @@ export const ar: TranslationDictionary = {
   'ctx3d.logTextureApplied': 'تم تعيين النسيج "{{name}}".',
   'ctx3d.logLinkedContent': 'تم ربط النموذج بالعنصر "{{name}}".',
   'ctx3d.logUnlinkedContent': 'تمت إزالة مرجع الأصل من "{{name}}".',
+  'viewport.undoBtn': 'تراجع',
+  'viewport.redoBtn': 'إعادة',
+  'viewport.undoTooltip': 'تراجع ({{shortcut}})',
+  'viewport.redoTooltip': 'إعادة ({{shortcut}})',
+  'viewport.axisAll': 'جميع المحاور',
+  'viewport.axisX': 'المحور X',
+  'viewport.axisY': 'المحور Y',
+  'viewport.axisZ': 'المحور Z',
+  'viewport.transformHint': 'X/Y/Z محور · Enter تأكيد · Esc إلغاء',
+  'ctx3d.undo': 'تراجع',
+  'ctx3d.redo': 'إعادة',
+  'workspace.savedBadge': 'محفوظ',
 } as const;
 

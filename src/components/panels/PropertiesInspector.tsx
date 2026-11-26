@@ -33,7 +33,11 @@ interface PropertiesInspectorProps {
   onToggleBounds: () => void;
   onToggleCollision: () => void;
   onTogglePivot: () => void;
-  onUpdateAsset: (assetId: string, patch: Partial<ModAsset>) => void;
+  onUpdateAsset: (
+    assetId: string,
+    patch: Partial<ModAsset>,
+    options?: { recordUndo?: boolean; historyGroupKey?: string }
+  ) => void;
   onUpdateManifest: (patch: Partial<ModManifest>) => void;
 }
 
@@ -61,6 +65,10 @@ export const PropertiesInspector: React.FC<PropertiesInspectorProps> = ({
   onUpdateManifest,
 }) => {
   const { t, language } = useI18n();
+  const gestureSeqRef = React.useRef(1);
+  const bumpGesture = () => {
+    gestureSeqRef.current += 1;
+  };
 
   const formatBytes = (bytes: number): string => {
     if (bytes < 1024) return t('common.bytes', { value: bytes });
@@ -412,27 +420,39 @@ export const PropertiesInspector: React.FC<PropertiesInspectorProps> = ({
   const updateTransform = (
     group: keyof AssetTransform,
     axis: 'x' | 'y' | 'z',
-    val: number
+    val: number,
+    historyGroupKey?: string
   ) => {
     const safe = Number.isFinite(val) ? val : 0;
-    onUpdateAsset(asset.id, {
-      transform: {
-        ...asset.transform,
-        [group]: {
-          ...asset.transform[group],
-          [axis]: safe,
+    onUpdateAsset(
+      asset.id,
+      {
+        transform: {
+          ...asset.transform,
+          [group]: {
+            ...asset.transform[group],
+            [axis]: safe,
+          },
         },
       },
-    });
+      historyGroupKey ? { historyGroupKey } : undefined
+    );
   };
 
-  const updateMaterial = (patch: Partial<AssetMaterialConfig>) => {
-    onUpdateAsset(asset.id, {
-      material: {
-        ...asset.material,
-        ...patch,
+  const updateMaterial = (
+    patch: Partial<AssetMaterialConfig>,
+    historyGroupKey?: string
+  ) => {
+    onUpdateAsset(
+      asset.id,
+      {
+        material: {
+          ...asset.material,
+          ...patch,
+        },
       },
-    });
+      historyGroupKey ? { historyGroupKey } : undefined
+    );
   };
 
   const collision: AssetCollisionConfig = asset.collision ?? {
@@ -441,13 +461,20 @@ export const PropertiesInspector: React.FC<PropertiesInspectorProps> = ({
     offsetY: 0,
   };
 
-  const updateCollision = (patch: Partial<AssetCollisionConfig>) => {
-    onUpdateAsset(asset.id, {
-      collision: {
-        ...collision,
-        ...patch,
+  const updateCollision = (
+    patch: Partial<AssetCollisionConfig>,
+    historyGroupKey?: string
+  ) => {
+    onUpdateAsset(
+      asset.id,
+      {
+        collision: {
+          ...collision,
+          ...patch,
+        },
       },
-    });
+      historyGroupKey ? { historyGroupKey } : undefined
+    );
   };
 
   const resetTransform = () => {
@@ -602,8 +629,15 @@ export const PropertiesInspector: React.FC<PropertiesInspectorProps> = ({
                         disabled={Boolean(asset.locked)}
                         step={group === 'rotation' ? 5 : 0.1}
                         value={asset.transform[group][axis]}
+                        onFocus={bumpGesture}
+                        onBlur={bumpGesture}
                         onChange={(e) =>
-                          updateTransform(group, axis, parseFloat(e.target.value))
+                          updateTransform(
+                            group,
+                            axis,
+                            parseFloat(e.target.value),
+                            `tr:${asset.id}:${group}:${axis}:${gestureSeqRef.current}`
+                          )
                         }
                         className="w-full bg-transparent text-[11px] font-mono tabular-nums text-slate-900 dark:text-slate-100 focus:outline-none disabled:cursor-not-allowed"
                       />
@@ -713,8 +747,14 @@ export const PropertiesInspector: React.FC<PropertiesInspectorProps> = ({
                     max="1.5"
                     step="0.05"
                     value={collision.scale}
+                    onPointerDown={bumpGesture}
+                    onPointerUp={bumpGesture}
+                    onBlur={bumpGesture}
                     onChange={(e) =>
-                      updateCollision({ scale: parseFloat(e.target.value) })
+                      updateCollision(
+                        { scale: parseFloat(e.target.value) },
+                        `col:${asset.id}:scale:${gestureSeqRef.current}`
+                      )
                     }
                     className="w-full accent-emerald-500"
                   />
@@ -735,8 +775,14 @@ export const PropertiesInspector: React.FC<PropertiesInspectorProps> = ({
                     max="1"
                     step="0.05"
                     value={collision.offsetY}
+                    onPointerDown={bumpGesture}
+                    onPointerUp={bumpGesture}
+                    onBlur={bumpGesture}
                     onChange={(e) =>
-                      updateCollision({ offsetY: parseFloat(e.target.value) })
+                      updateCollision(
+                        { offsetY: parseFloat(e.target.value) },
+                        `col:${asset.id}:offsetY:${gestureSeqRef.current}`
+                      )
                     }
                     className="w-full accent-emerald-500"
                   />
@@ -812,7 +858,14 @@ export const PropertiesInspector: React.FC<PropertiesInspectorProps> = ({
                       <input
                         type="color"
                         value={asset.material.color}
-                        onChange={(e) => updateMaterial({ color: e.target.value })}
+                        onPointerDown={bumpGesture}
+                        onBlur={bumpGesture}
+                        onChange={(e) =>
+                          updateMaterial(
+                            { color: e.target.value },
+                            `mat:${asset.id}:color:${gestureSeqRef.current}`
+                          )
+                        }
                         className="w-5 h-5 rounded cursor-pointer bg-transparent border-0 p-0"
                       />
                       <span className="font-mono text-[11px] text-slate-700 dark:text-slate-300">
@@ -829,8 +882,13 @@ export const PropertiesInspector: React.FC<PropertiesInspectorProps> = ({
                       <input
                         type="color"
                         value={asset.material.accentColor}
+                        onPointerDown={bumpGesture}
+                        onBlur={bumpGesture}
                         onChange={(e) =>
-                          updateMaterial({ accentColor: e.target.value })
+                          updateMaterial(
+                            { accentColor: e.target.value },
+                            `mat:${asset.id}:accent:${gestureSeqRef.current}`
+                          )
                         }
                         className="w-5 h-5 rounded cursor-pointer bg-transparent border-0 p-0"
                       />
@@ -856,8 +914,14 @@ export const PropertiesInspector: React.FC<PropertiesInspectorProps> = ({
                     max="1"
                     step="0.01"
                     value={asset.material.roughness}
+                    onPointerDown={bumpGesture}
+                    onPointerUp={bumpGesture}
+                    onBlur={bumpGesture}
                     onChange={(e) =>
-                      updateMaterial({ roughness: parseFloat(e.target.value) })
+                      updateMaterial(
+                        { roughness: parseFloat(e.target.value) },
+                        `mat:${asset.id}:roughness:${gestureSeqRef.current}`
+                      )
                     }
                     className="w-full accent-blue-600"
                   />
@@ -878,8 +942,14 @@ export const PropertiesInspector: React.FC<PropertiesInspectorProps> = ({
                     max="1"
                     step="0.01"
                     value={asset.material.metalness}
+                    onPointerDown={bumpGesture}
+                    onPointerUp={bumpGesture}
+                    onBlur={bumpGesture}
                     onChange={(e) =>
-                      updateMaterial({ metalness: parseFloat(e.target.value) })
+                      updateMaterial(
+                        { metalness: parseFloat(e.target.value) },
+                        `mat:${asset.id}:metalness:${gestureSeqRef.current}`
+                      )
                     }
                     className="w-full accent-blue-600"
                   />
@@ -900,10 +970,14 @@ export const PropertiesInspector: React.FC<PropertiesInspectorProps> = ({
                     max="1.5"
                     step="0.05"
                     value={asset.material.emissiveIntensity}
+                    onPointerDown={bumpGesture}
+                    onPointerUp={bumpGesture}
+                    onBlur={bumpGesture}
                     onChange={(e) =>
-                      updateMaterial({
-                        emissiveIntensity: parseFloat(e.target.value),
-                      })
+                      updateMaterial(
+                        { emissiveIntensity: parseFloat(e.target.value) },
+                        `mat:${asset.id}:emissive:${gestureSeqRef.current}`
+                      )
                     }
                     className="w-full accent-blue-600"
                   />

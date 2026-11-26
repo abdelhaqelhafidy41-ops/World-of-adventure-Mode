@@ -2207,6 +2207,18 @@ export const en = {
   'ctx3d.logTextureApplied': 'Assigned texture "{{name}}".',
   'ctx3d.logLinkedContent': 'Linked model to "{{name}}".',
   'ctx3d.logUnlinkedContent': 'Removed asset reference from "{{name}}".',
+  'viewport.undoBtn': 'Undo',
+  'viewport.redoBtn': 'Redo',
+  'viewport.undoTooltip': 'Undo ({{shortcut}})',
+  'viewport.redoTooltip': 'Redo ({{shortcut}})',
+  'viewport.axisAll': 'All Axes',
+  'viewport.axisX': 'Axis X',
+  'viewport.axisY': 'Axis Y',
+  'viewport.axisZ': 'Axis Z',
+  'viewport.transformHint': 'X/Y/Z axis · Enter confirm · Esc cancel',
+  'ctx3d.undo': 'Undo',
+  'ctx3d.redo': 'Redo',
+  'workspace.savedBadge': 'Saved',
 } as const;
 
 export type TranslationKey = keyof typeof en;

@@ -37,6 +37,7 @@ export {
 } from './androidAccessManager';
 export {
   detectFormFactor,
+  detectIsMacOS,
   detectIsTouchPrimary,
   detectRuntimePlatform,
   getPlatformCapabilities,

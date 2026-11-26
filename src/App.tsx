@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, RefreshCw, Settings, X } from 'lucide-react';
 import { BuildExportView } from '@/src/components/BuildExportView';
 import { CreateModModal } from '@/src/components/CreateModModal';
@@ -109,7 +109,11 @@ export default function App() {
   const [buildHistory, setBuildHistory] = useState<BuildHistoryEntry[]>([]);
   const [undoStack, setUndoStack] = useState<ModProject[]>([]);
   const [redoStack, setRedoStack] = useState<ModProject[]>([]);
+  const [savedSnapshots, setSavedSnapshots] = useState<Record<string, ModProject>>({});
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
+  const projectsRef = useRef<ModProject[]>(projects);
+  projectsRef.current = projects;
+  const historyGroupRef = useRef<{ key: string; timestamp: number } | null>(null);
   const [pendingIssueFocus, setPendingIssueFocus] = useState<{
     issue: ValidationIssue;
     token: number;
@@ -188,6 +192,11 @@ export default function App() {
       }
 
       setProjects(initialProjects);
+      const initialSaved: Record<string, ModProject> = {};
+      initialProjects.forEach((p) => {
+        initialSaved[p.id] = p;
+      });
+      setSavedSnapshots(initialSaved);
       if (initialProjects.length > 0) {
         const preferred = loadedStorageConfig.lastOpenedProjectId
           ? initialProjects.find((p) => p.id === loadedStorageConfig.lastOpenedProjectId)
@@ -213,10 +222,16 @@ export default function App() {
   }, [setLanguage]);
 
   const activeProject = projects.find((p) => p.id === activeProjectId) ?? null;
+  const hasUnsavedChanges = Boolean(
+    activeProject &&
+      savedSnapshots[activeProject.id] &&
+      savedSnapshots[activeProject.id] !== activeProject
+  );
 
   useEffect(() => {
     setUndoStack([]);
     setRedoStack([]);
+    historyGroupRef.current = null;
     if (!activeProjectId) {
       setBackups([]);
       setBuildHistory([]);
@@ -237,22 +252,46 @@ export default function App() {
   }, [activeProjectId]);
 
   const persistProjectUpdate = useCallback(
-    (updated: ModProject, options?: { recordUndo?: boolean }) => {
+    (
+      updated: ModProject,
+      options?: { recordUndo?: boolean; historyGroupKey?: string }
+    ) => {
       const shouldRecordUndo = options?.recordUndo !== false;
-      setProjects((prev) => {
-        const current = prev.find((p) => p.id === updated.id);
-        if (shouldRecordUndo && current && current.id === activeProjectId) {
+      const current = projectsRef.current.find((p) => p.id === updated.id);
+      if (shouldRecordUndo && current && current.id === activeProjectId) {
+        const groupKey = options?.historyGroupKey;
+        const now = Date.now();
+        const canCoalesce =
+          Boolean(groupKey) &&
+          historyGroupRef.current?.key === groupKey &&
+          now - (historyGroupRef.current?.timestamp ?? 0) < 900;
+
+        if (canCoalesce) {
+          historyGroupRef.current = { key: groupKey!, timestamp: now };
+          setRedoStack([]);
+        } else {
+          historyGroupRef.current = groupKey
+            ? { key: groupKey, timestamp: now }
+            : null;
           setUndoStack((stack) => [...stack.slice(-34), current]);
           setRedoStack([]);
         }
+      } else if (shouldRecordUndo) {
+        historyGroupRef.current = null;
+      }
+
+      setProjects((prev) => {
         const exists = prev.some((p) => p.id === updated.id);
-        return exists
+        const next = exists
           ? prev.map((p) => (p.id === updated.id ? updated : p))
           : [updated, ...prev];
+        projectsRef.current = next;
+        return next;
       });
       if (settings.autoSave) {
         void saveProject(updated).then(() => {
           setLastSavedAt(formatTimestamp());
+          setSavedSnapshots((prev) => ({ ...prev, [updated.id]: updated }));
         });
       }
     },
@@ -261,45 +300,61 @@ export default function App() {
 
   const handleUndo = useCallback(() => {
     if (!activeProject || undoStack.length === 0) return;
+    historyGroupRef.current = null;
     const previous = undoStack[undoStack.length - 1];
     setUndoStack((prev) => prev.slice(0, -1));
     setRedoStack((prev) => [...prev.slice(-34), activeProject]);
-    setProjects((prev) =>
-      prev.map((p) => (p.id === previous.id ? previous : p))
-    );
+    setProjects((prev) => {
+      const next = prev.map((p) => (p.id === previous.id ? previous : p));
+      projectsRef.current = next;
+      return next;
+    });
     if (settings.autoSave) {
-      void saveProject(previous).then(() => setLastSavedAt(formatTimestamp()));
+      void saveProject(previous).then(() => {
+        setLastSavedAt(formatTimestamp());
+        setSavedSnapshots((prev) => ({ ...prev, [previous.id]: previous }));
+      });
     }
     appendLog('info', 'History', t('app.logUndid'));
   }, [activeProject, undoStack, settings.autoSave, appendLog, t]);
 
   const handleRedo = useCallback(() => {
     if (!activeProject || redoStack.length === 0) return;
+    historyGroupRef.current = null;
     const next = redoStack[redoStack.length - 1];
     setRedoStack((prev) => prev.slice(0, -1));
     setUndoStack((prev) => [...prev.slice(-34), activeProject]);
-    setProjects((prev) => prev.map((p) => (p.id === next.id ? next : p)));
+    setProjects((prev) => {
+      const updatedList = prev.map((p) => (p.id === next.id ? next : p));
+      projectsRef.current = updatedList;
+      return updatedList;
+    });
     if (settings.autoSave) {
-      void saveProject(next).then(() => setLastSavedAt(formatTimestamp()));
+      void saveProject(next).then(() => {
+        setLastSavedAt(formatTimestamp());
+        setSavedSnapshots((prev) => ({ ...prev, [next.id]: next }));
+      });
     }
     appendLog('info', 'History', t('app.logRedid'));
   }, [activeProject, redoStack, settings.autoSave, appendLog, t]);
 
   const handleManualSave = useCallback(() => {
     if (!activeProject) return;
-    void saveProject(activeProject).then(() => {
+    const snapshot = activeProject;
+    void saveProject(snapshot).then(() => {
       setLastSavedAt(formatTimestamp());
+      setSavedSnapshots((prev) => ({ ...prev, [snapshot.id]: snapshot }));
       appendLog(
         'success',
         'Storage',
-        t('app.savedProject', { name: activeProject.manifest.name })
+        t('app.savedProject', { name: snapshot.manifest.name })
       );
     });
   }, [activeProject, appendLog, t]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey)) return;
+      if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
       const key = e.key.toLowerCase();
       if (key === 's') {
         e.preventDefault();
@@ -308,12 +363,16 @@ export default function App() {
       }
       const target = e.target as HTMLElement | null;
       const tag = target?.tagName ?? '';
-      if (
+      const isEditable =
         tag === 'INPUT' ||
         tag === 'TEXTAREA' ||
         tag === 'SELECT' ||
-        target?.isContentEditable
-      ) {
+        Boolean(target?.isContentEditable || target?.closest?.('[contenteditable="true"]'));
+      const inDialog = Boolean(
+        target?.closest?.('[role="dialog"], [aria-modal="true"]') ||
+          document.querySelector('[role="dialog"], [aria-modal="true"]')
+      );
+      if (isEditable || inDialog) {
         return;
       }
       if (key === 'z' && !e.shiftKey) {
@@ -334,6 +393,7 @@ export default function App() {
     await saveProject(project);
     await saveStorageConfig({ lastOpenedProjectId: project.id });
     setProjects((prev) => [project, ...prev]);
+    setSavedSnapshots((prev) => ({ ...prev, [project.id]: project }));
     setActiveProjectId(project.id);
     setCreateOpen(false);
     setLastBuild(null);
@@ -356,6 +416,7 @@ export default function App() {
     await saveProject(touched);
     await saveStorageConfig({ lastOpenedProjectId: touched.id });
     setProjects((prev) => prev.map((p) => (p.id === touched.id ? touched : p)));
+    setSavedSnapshots((prev) => ({ ...prev, [touched.id]: touched }));
     setActiveProjectId(touched.id);
     setLastBuild(null);
     setActiveView('workspace');
@@ -538,6 +599,7 @@ export default function App() {
     const copy = syncContentFilesInProject(rawCopy, clonedContents);
     await saveProject(copy);
     setProjects((prev) => [copy, ...prev]);
+    setSavedSnapshots((prev) => ({ ...prev, [copy.id]: copy }));
     appendLog(
       'info',
       'Project',
@@ -714,6 +776,7 @@ export default function App() {
     setProjects((prev) =>
       prev.map((p) => (p.id === oldProjectId ? saved : p))
     );
+    setSavedSnapshots((prev) => ({ ...prev, [saved.id]: saved }));
     if (activeProjectId === oldProjectId) {
       setActiveProjectId(saved.id);
     }
@@ -751,6 +814,7 @@ export default function App() {
       const filtered = prev.filter((p) => p.id !== sample.id);
       return [sample, ...filtered];
     });
+    setSavedSnapshots((prev) => ({ ...prev, [sample.id]: sample }));
     setActiveProjectId(sample.id);
     appendLog('info', 'Project', t('app.logLoadedSample', { name: sample.manifest.name }));
   };
@@ -777,7 +841,11 @@ export default function App() {
     [activeProject, persistProjectUpdate]
   );
 
-  const handleUpdateAsset = (assetId: string, patch: Partial<ModAsset>) => {
+  const handleUpdateAsset = (
+    assetId: string,
+    patch: Partial<ModAsset>,
+    options?: { recordUndo?: boolean; historyGroupKey?: string }
+  ) => {
     if (!activeProject) return;
     const now = new Date().toISOString();
     const nextAssets = activeProject.assets.map((a) =>
@@ -793,11 +861,14 @@ export default function App() {
           }
         : f
     );
-    persistProjectUpdate({
-      ...activeProject,
-      assets: nextAssets,
-      files: nextFiles,
-    });
+    persistProjectUpdate(
+      {
+        ...activeProject,
+        assets: nextAssets,
+        files: nextFiles,
+      },
+      options
+    );
   };
 
   const handleImportAssetFiles = async (fileList: FileList | File[]) => {
@@ -1436,8 +1507,10 @@ export default function App() {
 
   const handleSaveBeforeExport = useCallback(async () => {
     if (!activeProject) return;
-    await saveProject(activeProject);
+    const snapshot = activeProject;
+    await saveProject(snapshot);
     setLastSavedAt(formatTimestamp());
+    setSavedSnapshots((prev) => ({ ...prev, [snapshot.id]: snapshot }));
   }, [activeProject]);
 
   useBackNavigation(() => {
@@ -1552,6 +1625,7 @@ export default function App() {
           pendingIssueFocus={pendingIssueFocus}
           canUndo={undoStack.length > 0}
           canRedo={redoStack.length > 0}
+          hasUnsavedChanges={hasUnsavedChanges}
           lastSavedAt={lastSavedAt}
           onUndo={handleUndo}
           onRedo={handleRedo}

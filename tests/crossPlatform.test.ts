@@ -22,8 +22,12 @@ import {
   validateZipArchiveLimits,
 } from '../src/core/security/importGuard';
 import {
+  CURRENT_GAME_VERSION,
+  CURRENT_MOD_CONTENT_SCHEMA_VERSION,
   DEFAULT_GAME_VERSION,
   MIN_SUPPORTED_GAME_VERSION,
+  SUPPORTED_MOD_CONTENT_SCHEMA_VERSIONS,
+  validateMaxGameVersion,
   validateSupportedGameVersion,
 } from '../src/core/api/woaModApiSpec';
 import {
@@ -378,16 +382,19 @@ test('importModFromFile rejects .woamod archives containing scripts/main.ts, arb
   await assert.rejects(() => importModFromFile(disguisedFile), /Security violation|Blocked/i);
 });
 
-test('validateSupportedGameVersion enforces SemVer >= 1.1.24 with exact error messages', () => {
+test('validateSupportedGameVersion enforces SemVer >= 1.1.24 with current game version 1.1.25', () => {
+  assert.equal(CURRENT_GAME_VERSION, '1.1.25');
   assert.equal(MIN_SUPPORTED_GAME_VERSION, '1.1.24');
-  assert.equal(DEFAULT_GAME_VERSION, '1.1.24');
+  assert.equal(DEFAULT_GAME_VERSION, '1.1.25');
+  assert.equal(APP_VERSION, '1.0.0');
+  assert.notEqual(CURRENT_GAME_VERSION, APP_VERSION);
 
-  for (const validVer of ['1.1.24', ' 1.1.24 ', '1.1.25', '1.2.0', '1.8.0', '1.9.0', '2.0.0', '2.0.0-preview', '3.4.5']) {
+  for (const validVer of ['1.1.24', ' 1.1.24 ', '1.1.25', '1.1.26', '1.2.0', '1.8.0', '1.9.0', '2.0.0', '2.0.0-preview', '3.0.0', '3.5.10']) {
     const res = validateSupportedGameVersion(validVer);
     assert.equal(res.valid, true, `Expected ${validVer} to be valid`);
   }
 
-  for (const lowVer of ['1.1.23', '1.1.0', '1.0.0', '0.9.9']) {
+  for (const lowVer of ['1.1.23', '1.1.22', '1.1.0', '1.0.0', '0.9.9', '0.9.0']) {
     const res = validateSupportedGameVersion(lowVer);
     assert.equal(res.valid, false, `Expected ${lowVer} to be rejected`);
     assert.equal(res.code, 'below_minimum');
@@ -471,13 +478,18 @@ test('general .woa3d classification, serialization, import, and category/content
   assert.equal(isSupportedAssetPath('assets/models/arbitrary_custom_model.woa3d'), true);
   assert.equal(isSupportedAssetPath('assets/textures/arbitrary_custom_model.woa3d'), false);
 
-  // Sample project round-trip preserves all 3 .woa3d assets + 1.1.24 version cleanly
+  // Sample project round-trip preserves all 3 .woa3d assets + 1.1.25 version without artificial 2.x cap
   const sample = createStarterSampleProject();
-  assert.equal(sample.manifest.supportedGameVersion, '1.1.24');
+  assert.equal(sample.manifest.supportedGameVersion, '1.1.25');
+  assert.equal(sample.manifest.maxGameVersion, undefined);
   const { blob, filename } = await exportModArchiveBlob(sample, 'universal', { confirmWarnings: true });
   const zip = await JSZip.loadAsync(await blob.arrayBuffer());
   const modJson = JSON.parse(await zip.file('mod.json')!.async('string')) as Record<string, unknown>;
-  assert.equal(modJson.supportedGameVersion, '1.1.24');
+  assert.equal(modJson.supportedGameVersion, '1.1.25');
+  assert.equal(modJson.currentGameVersion, '1.1.25');
+  assert.equal(modJson.minGameVersion, '1.1.24');
+  assert.equal(modJson.maxGameVersion, undefined);
+  assert.equal(modJson.schemaVersion, 2);
 
   const woa3dEntries = Object.keys(zip.files).filter((p) => p.endsWith('.woa3d'));
   assert.equal(woa3dEntries.length, 3);
@@ -855,5 +867,193 @@ test('Android WoaStoragePlugin native SAF dedicated folder methods, atomic temp 
     assert.match(pluginJava, new RegExp(`public\\s+void\\s+${methodName}\\s*\\(`));
   }
 });
+
+test('validator separates game version (1.1.25) from Mod Creator app version (1.0.0) and rejects 2.x maxGameVersion', async () => {
+  const mod1125 = createModProject({
+    modId: 'com.test.woa_1125',
+    name: 'Frontier 1.1.25 Mod',
+    version: '0.2.0',
+    author: 'Tester',
+    description: 'Validates game version 1.1.25 and schema v2 alignment.',
+    supportedGameVersion: '1.1.25',
+    categories: ['Items'],
+    templateId: 'blank',
+  });
+
+  assert.equal(mod1125.manifest.supportedGameVersion, '1.1.25');
+  assert.equal(mod1125.manifest.minGameVersion, '1.1.24');
+  assert.equal(mod1125.manifest.maxGameVersion, undefined);
+
+  const report = await validateModProject(mod1125, [mod1125], 'universal');
+  assert.equal(report.errorCount, 0, JSON.stringify(report.issues));
+  assert.equal(report.currentGameVersion, '1.1.25');
+  assert.equal(report.minSupportedGameVersion, '1.1.24');
+  assert.equal(report.targetGameVersion, '1.1.25');
+  assert.equal(report.modCreatorVersion, '1.0.0');
+  assert.equal(report.contentSchemaVersion, 2);
+  assert.equal(CURRENT_MOD_CONTENT_SCHEMA_VERSION, 2);
+  assert.deepEqual([...SUPPORTED_MOD_CONTENT_SCHEMA_VERSIONS], [1, 2]);
+
+  // Below-minimum version error reports current game version 1.1.25 (never Mod Creator 1.0.0)
+  const lowVerMod = createModProject({
+    modId: 'com.test.woa_low',
+    name: 'Legacy Low Mod',
+    version: '0.1.0',
+    author: 'Tester',
+    description: 'Verifies below-minimum version error text does not confuse 1.0.0.',
+    supportedGameVersion: '1.0.0',
+    categories: ['Items'],
+    templateId: 'blank',
+  });
+  const lowReport = await validateModProject(lowVerMod, [lowVerMod], 'universal');
+  const verIssue = lowReport.issues.find((i) => i.code === 'UNSUPPORTED_GAME_VERSION');
+  assert.ok(verIssue, 'Expected UNSUPPORTED_GAME_VERSION for 1.0.0');
+  assert.match(verIssue.problem, /1\.1\.25/);
+  assert.doesNotMatch(verIssue.problem, /current.*1\.0\.0/i);
+
+  // maxGameVersion validation: wildcard "2.x" rejected, omitted or valid SemVer >= target accepted
+  assert.equal(validateMaxGameVersion(undefined, '1.1.25').valid, true);
+  assert.equal(validateMaxGameVersion('1.1.25', '1.1.25').valid, true);
+  assert.equal(validateMaxGameVersion('2.0.0', '1.1.25').valid, true);
+  assert.equal(validateMaxGameVersion('2.x', '1.1.25').valid, false);
+  assert.equal(validateMaxGameVersion('1.1.24', '1.1.25').valid, false);
+
+  const badMaxMod = createModProject({
+    modId: 'com.test.bad_max',
+    name: 'Bad Max Cap Mod',
+    version: '0.1.0',
+    author: 'Tester',
+    description: 'Verifies invalid maxGameVersion wildcard is caught by validator.',
+    supportedGameVersion: '1.1.25',
+    categories: ['Items'],
+    templateId: 'blank',
+  });
+  badMaxMod.manifest.maxGameVersion = '2.x';
+  const badMaxReport = await validateModProject(badMaxMod, [badMaxMod], 'universal');
+  assert.ok(badMaxReport.issues.some((i) => i.code === 'INVALID_MAX_GAME_VERSION'));
+});
+
+test('schemaVersion v1 (backward-compatible) and v2 pass validation while preserving original game version', async () => {
+  const v1Zip = new JSZip();
+  v1Zip.file(
+    'mod.json',
+    JSON.stringify({
+      $schema: 'woa.mod.v1',
+      schemaVersion: 1,
+      packageFormatVersion: 1,
+      modId: 'com.test.legacy_v1',
+      name: 'Legacy V1 Mod',
+      version: '1.0.0',
+      author: 'LegacyAuthor',
+      description: 'Backward compatible schema v1 mod targeting 1.1.24.',
+      supportedGameVersion: '1.1.24',
+      minGameVersion: '1.1.24',
+      categories: ['Items'],
+    })
+  );
+  v1Zip.file(
+    'data/registry.json',
+    JSON.stringify({
+      schemaVersion: 1,
+      modId: 'com.test.legacy_v1',
+      categories: ['Items'],
+      entries: [],
+    })
+  );
+
+  const v1File = new File([await v1Zip.generateAsync({ type: 'blob' })], 'legacy-v1.woamod');
+  const importedV1 = await importModFromFile(v1File);
+  // Original project supportedGameVersion is NOT silently overwritten
+  assert.equal(importedV1.manifest.supportedGameVersion, '1.1.24');
+  assert.equal(importedV1.manifest.maxGameVersion, undefined);
+  assert.equal(importedV1.manifest.packageFormatVersion, 1);
+
+  const v1Validation = await validateModProject(importedV1, [importedV1], 'universal');
+  assert.equal(v1Validation.errorCount, 0, JSON.stringify(v1Validation.issues));
+  assert.equal(v1Validation.contentSchemaVersion, 1);
+
+  // Unsupported schemaVersion 99 is rejected on import
+  const badSchemaZip = new JSZip();
+  badSchemaZip.file(
+    'mod.json',
+    JSON.stringify({
+      schemaVersion: 99,
+      modId: 'com.test.bad_schema',
+      name: 'Unsupported Schema',
+      version: '1.0.0',
+      supportedGameVersion: '1.1.25',
+    })
+  );
+  const badSchemaFile = new File([await badSchemaZip.generateAsync({ type: 'blob' })], 'bad-schema.woamod');
+  await assert.rejects(() => importModFromFile(badSchemaFile), /Unsupported mod schemaVersion/i);
+});
+
+test('Entities mod with assets/models/clockwork_sentinel.woa3d (v1 & v2) validates, exports, and re-imports cleanly for 1.1.25', async () => {
+  const sentinelProject = createModProject({
+    modId: 'com.test.clockwork_mod',
+    name: 'Clockwork Guardians',
+    version: '0.1.0',
+    author: 'Tester',
+    description: 'Includes clockwork_sentinel.woa3d entity model for World of Adventure 1.1.25.',
+    supportedGameVersion: '1.1.25',
+    categories: ['Entities'],
+    templateId: 'blank',
+  });
+
+  const sentinelAsset = sentinelProject.assets.find(
+    (a) => a.path === 'assets/models/clockwork_sentinel.woa3d'
+  );
+  assert.ok(sentinelAsset, 'Expected clockwork_sentinel.woa3d asset to be scaffolded');
+
+  // Upgrade the .woa3d payload to schema v2 and verify validator + export preserve it without error
+  const sentinelNode = sentinelProject.files.find(
+    (f) => f.path === 'assets/models/clockwork_sentinel.woa3d'
+  );
+  assert.ok(sentinelNode?.content);
+  const parsedV1 = parseAndValidateWoa3dContent(sentinelNode.content);
+  sentinelNode.content = serializeWoa3dAsset({
+    $schema: 'woa.asset3d.v2',
+    schemaVersion: 2,
+    format: 'WOA3D',
+    preset: parsedV1.preset,
+    modCategory: parsedV1.modCategory,
+    pivotMode: parsedV1.pivotMode,
+    collision: parsedV1.collision,
+    transform: parsedV1.transform,
+    material: parsedV1.material,
+  });
+
+  const validation = await validateModProject(sentinelProject, [sentinelProject], 'universal');
+  assert.equal(validation.errorCount, 0, JSON.stringify(validation.issues));
+
+  const exported = await exportModArchiveBlob(sentinelProject, 'universal', { confirmWarnings: true });
+  const exportedZip = await JSZip.loadAsync(await exported.blob.arrayBuffer());
+  const sentinelEntry = exportedZip.file('assets/models/clockwork_sentinel.woa3d');
+  assert.ok(sentinelEntry, 'Expected exported .woamod to preserve assets/models/clockwork_sentinel.woa3d');
+  const exportedWoa3d = parseAndValidateWoa3dContent(await sentinelEntry.async('string'));
+  assert.equal(exportedWoa3d.$schema, 'woa.asset3d.v2');
+  assert.equal(exportedWoa3d.schemaVersion, 2);
+
+  // Re-import and re-export without scripts/main.ts — registry modelAsset keeps clockwork_sentinel.woa3d intact
+  const reimported = await importModFromFile(
+    new File([exported.blob], exported.filename, { type: 'application/octet-stream' })
+  );
+  assert.equal(reimported.manifest.supportedGameVersion, '1.1.25');
+  assert.equal(reimported.manifest.maxGameVersion, undefined);
+  assert.ok(
+    reimported.assets.some((a) => a.path === 'assets/models/clockwork_sentinel.woa3d'),
+    'Expected re-imported project to retain clockwork_sentinel.woa3d'
+  );
+  const reValidation = await validateModProject(reimported, [reimported], 'universal');
+  assert.equal(reValidation.errorCount, 0, JSON.stringify(reValidation.issues));
+
+  const reExported = await exportModArchiveBlob(reimported, 'universal', { confirmWarnings: true });
+  const reExportZip = await JSZip.loadAsync(await reExported.blob.arrayBuffer());
+  assert.ok(
+    reExportZip.file('assets/models/clockwork_sentinel.woa3d'),
+    'Expected re-exported .woamod to retain clockwork_sentinel.woa3d'
+  );
+});
+
 
 

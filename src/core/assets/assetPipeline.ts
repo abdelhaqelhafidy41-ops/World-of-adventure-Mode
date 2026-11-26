@@ -1,6 +1,11 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+import {
+  isSupportedContentSchemaVersion,
+  parseSchemaVersionNumber,
+  validateSupportedGameVersion,
+} from '@/src/core/api/woaModApiSpec';
 import { saveAssetBlob } from '@/src/core/storage/modRepository';
 import {
   assertSafeLocalAssetSize,
@@ -214,6 +219,8 @@ function isFiniteVec3(val: unknown): val is { x: number; y: number; z: number } 
 }
 
 export interface ParsedWoa3dAsset {
+  $schema?: string;
+  schemaVersion?: number;
   format: 'WOA3D';
   type: '3d-model';
   category: '3d-model';
@@ -226,6 +233,13 @@ export interface ParsedWoa3dAsset {
   material: AssetMaterialConfig;
   triangleEstimate: number;
 }
+
+const VALID_WOA3D_SCHEMAS = new Set([
+  'woa.asset3d.v1',
+  'woa.asset3d.v2',
+  'woa.asset3d.v1.json',
+  'woa.asset3d.v2.json',
+]);
 
 export function parseAndValidateWoa3dContent(rawText: string): ParsedWoa3dAsset {
   if (!rawText || !rawText.trim()) {
@@ -246,6 +260,53 @@ export function parseAndValidateWoa3dContent(rawText: string): ParsedWoa3dAsset 
   }
 
   const obj = parsed as Record<string, unknown>;
+
+  let resolvedSchema: string | undefined;
+  if (obj.$schema !== undefined) {
+    if (typeof obj.$schema !== 'string' || !VALID_WOA3D_SCHEMAS.has(obj.$schema.trim().toLowerCase())) {
+      throw new Error(`Unsupported WOA3D $schema: "${String(obj.$schema)}".`);
+    }
+    resolvedSchema = obj.$schema.trim();
+  }
+
+  let resolvedSchemaVersion: number | undefined;
+  if (obj.schemaVersion !== undefined) {
+    if (!isSupportedContentSchemaVersion(obj.schemaVersion)) {
+      throw new Error(
+        `Unsupported WOA3D schemaVersion: "${String(obj.schemaVersion)}" (supported: v1, v2).`
+      );
+    }
+    resolvedSchemaVersion = parseSchemaVersionNumber(obj.schemaVersion) ?? undefined;
+  } else if (resolvedSchema) {
+    const schemaMatch = /\.v(\d+)/i.exec(resolvedSchema);
+    if (schemaMatch) {
+      resolvedSchemaVersion = Number(schemaMatch[1]);
+    }
+  }
+
+  if (obj.supportedGameVersion !== undefined) {
+    if (typeof obj.supportedGameVersion !== 'string') {
+      throw new Error('WOA3D "supportedGameVersion" must be a SemVer string.');
+    }
+    const verCheck = validateSupportedGameVersion(obj.supportedGameVersion);
+    if (!verCheck.valid) {
+      throw new Error(
+        `Incompatible WOA3D supportedGameVersion "${obj.supportedGameVersion}": ${verCheck.error ?? 'invalid version'}`
+      );
+    }
+  }
+
+  if (obj.minGameVersion !== undefined) {
+    if (typeof obj.minGameVersion !== 'string') {
+      throw new Error('WOA3D "minGameVersion" must be a SemVer string.');
+    }
+    const minCheck = validateSupportedGameVersion(obj.minGameVersion);
+    if (!minCheck.valid) {
+      throw new Error(
+        `Incompatible WOA3D minGameVersion "${obj.minGameVersion}": ${minCheck.error ?? 'invalid version'}`
+      );
+    }
+  }
 
   if (obj.format !== undefined) {
     if (typeof obj.format !== 'string' || obj.format.trim().toUpperCase() !== 'WOA3D') {
@@ -362,6 +423,8 @@ export function parseAndValidateWoa3dContent(rawText: string): ParsedWoa3dAsset 
   }
 
   return {
+    ...(resolvedSchema ? { $schema: resolvedSchema } : {}),
+    ...(resolvedSchemaVersion !== undefined ? { schemaVersion: resolvedSchemaVersion } : {}),
     format: 'WOA3D',
     type: '3d-model',
     category: '3d-model',
@@ -380,11 +443,19 @@ export function serializeWoa3dAsset(
   asset: Pick<
     ModAsset,
     'format' | 'preset' | 'modCategory' | 'pivotMode' | 'collision' | 'transform' | 'material'
-  >
+  > & { schemaVersion?: number; $schema?: string }
 ): string {
+  const schemaVersion =
+    asset.schemaVersion ??
+    (asset.$schema?.toLowerCase().includes('.v2') ? 2 : undefined);
+  const schemaId =
+    asset.$schema ??
+    (schemaVersion === 2 ? 'woa.asset3d.v2' : 'woa.asset3d.v1');
+
   return JSON.stringify(
     {
-      $schema: 'woa.asset3d.v1',
+      $schema: schemaId,
+      ...(schemaVersion !== undefined ? { schemaVersion } : {}),
       format: asset.format || 'WOA3D',
       type: '3d-model',
       category: '3d-model',
@@ -653,6 +724,8 @@ export async function importLocalAssetFile(
     const rawText = new TextDecoder().decode(safeBuffer);
     const parsedWoa3d = parseAndValidateWoa3dContent(rawText);
     const serialized = serializeWoa3dAsset({
+      $schema: parsedWoa3d.$schema,
+      schemaVersion: parsedWoa3d.schemaVersion,
       format: 'WOA3D',
       preset: parsedWoa3d.preset,
       modCategory: replaceAsset?.modCategory ?? parsedWoa3d.modCategory,

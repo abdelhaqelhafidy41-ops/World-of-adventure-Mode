@@ -980,7 +980,9 @@ export const BuildExportView: React.FC<BuildExportViewProps> = ({
             <div className="p-3 rounded border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-[#0B0F17]">
               <dt className="text-[11px] text-slate-500 dark:text-slate-400">{t('build.compatGameRange')}</dt>
               <dd dir="ltr" className="mt-1 font-mono font-semibold text-slate-900 dark:text-slate-100">
-                {compatInfo.minGameVersion} – {compatInfo.maxGameVersion}
+                {compatInfo.maxGameVersion
+                  ? `${compatInfo.minGameVersion} – ${compatInfo.maxGameVersion}`
+                  : `>= ${compatInfo.minGameVersion}`}
               </dd>
             </div>
             <div className="p-3 rounded border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-[#0B0F17]">

@@ -19,7 +19,10 @@ import {
   WifiOff,
   X,
 } from 'lucide-react';
-import { SUPPORTED_GAME_VERSIONS } from '@/src/core/project/modScaffolder';
+import {
+  CURRENT_GAME_VERSION,
+  validateSupportedGameVersion,
+} from '@/src/core/api/woaModApiSpec';
 import {
   DEFAULT_EDITOR_SETTINGS,
   saveStorageConfig,
@@ -657,19 +660,39 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
                   {t('createMod.gameVersionLabel')}
                 </label>
-                <select
-                  value={settings.defaultGameVersion}
-                  onChange={(e) =>
-                    onUpdateSettings({ defaultGameVersion: e.target.value })
-                  }
-                  className="w-full px-3 py-2 text-xs rounded-md border border-slate-300 bg-white text-slate-900 dark:border-white/10 dark:bg-[#0B0F17] dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  {SUPPORTED_GAME_VERSIONS.map((v) => (
-                    <option key={v} value={v}>
-                      {v}
-                    </option>
-                  ))}
-                </select>
+                {(() => {
+                  const verResult = validateSupportedGameVersion(settings.defaultGameVersion);
+                  return (
+                    <>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        dir="ltr"
+                        value={settings.defaultGameVersion}
+                        onChange={(e) =>
+                          onUpdateSettings({ defaultGameVersion: e.target.value })
+                        }
+                        onBlur={() => {
+                          if (!validateSupportedGameVersion(settings.defaultGameVersion).valid) {
+                            onUpdateSettings({ defaultGameVersion: CURRENT_GAME_VERSION });
+                          }
+                        }}
+                        placeholder={CURRENT_GAME_VERSION}
+                        aria-invalid={!verResult.valid}
+                        className={`w-full px-3 py-2 text-xs font-mono tabular-nums rounded-md border bg-white text-slate-900 dark:bg-[#0B0F17] dark:text-slate-100 focus:outline-none focus:ring-2 ${
+                          verResult.valid
+                            ? 'border-slate-300 focus:ring-blue-500 dark:border-white/10'
+                            : 'border-red-500 focus:ring-red-500 dark:border-red-500/70'
+                        }`}
+                      />
+                      {!verResult.valid && (
+                        <p className="mt-1 text-[11px] text-red-600 dark:text-red-400">
+                          {verResult.error}
+                        </p>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
             </div>
 

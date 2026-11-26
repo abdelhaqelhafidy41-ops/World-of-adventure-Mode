@@ -31,14 +31,24 @@ import {
   validateWeapon,
   validateWorldObjectConfig,
 } from '@/src/core/content/contentRegistry';
+import {
+  CURRENT_GAME_VERSION,
+  CURRENT_MOD_CONTENT_SCHEMA_VERSION,
+  MIN_SUPPORTED_GAME_VERSION,
+  SUPPORTED_MOD_CONTENT_SCHEMA_VERSIONS,
+  isSupportedContentSchemaVersion,
+  parseSchemaVersionNumber,
+  validateMaxGameVersion,
+  validateSupportedGameVersion,
+} from '@/src/core/api/woaModApiSpec';
 import { t, type TranslationKey } from '@/src/i18n';
 import {
   validateModId,
   validateSemver,
-  validateSupportedGameVersion,
 } from '@/src/core/project/modScaffolder';
 import { getAssetBlobRecord } from '@/src/core/storage/modRepository';
 import { isBlockedExecutableFile } from '@/src/core/security/importGuard';
+import { APP_VERSION } from '@/src/core/version';
 import {
   ContentKind,
   ContentValidationIssue,
@@ -436,6 +446,8 @@ export async function validateModProject(
     : modJsonNode
       ? 'mod.json'
       : 'mod.manifest.json';
+  let detectedSchemaVersion: number | undefined;
+  const supportedSchemaListText = SUPPORTED_MOD_CONTENT_SCHEMA_VERSIONS.map((v) => `v${v}`).join(', ');
 
   // ---------------------------------------------------------------------------
   // 1. MANIFEST & METADATA (mod.json / mod.manifest.json, Mod ID, Version)
@@ -464,7 +476,9 @@ export async function validateModProject(
         });
       } else {
         try {
-          const parsed = JSON.parse(node.content) as Partial<ModManifest>;
+          const parsed = JSON.parse(node.content) as Partial<ModManifest> & {
+            schemaVersion?: unknown;
+          };
           if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
             pushIssue('error', 'MANIFEST_INVALID_OBJECT', 'manifest', {
               file: node.path,
@@ -476,6 +490,54 @@ export async function validateModProject(
               targetRef: node.path,
             });
           } else {
+            if (parsed.schemaVersion !== undefined) {
+              if (!isSupportedContentSchemaVersion(parsed.schemaVersion)) {
+                pushIssue('error', 'UNSUPPORTED_SCHEMA_VERSION', 'manifest', {
+                  file: node.path,
+                  object: t('validator.obj.manifest'),
+                  property: 'schemaVersion',
+                  problem: t('validator.unsupportedSchemaProblem', {
+                    path: node.path,
+                    schemaVersion: String(parsed.schemaVersion),
+                    supported: supportedSchemaListText,
+                  }),
+                  suggestion: t('validator.unsupportedSchemaSuggestion', {
+                    supported: supportedSchemaListText,
+                  }),
+                  targetType: 'file',
+                  targetRef: node.path,
+                });
+              } else {
+                const sv = parseSchemaVersionNumber(parsed.schemaVersion);
+                if (sv !== null) {
+                  detectedSchemaVersion = Math.max(detectedSchemaVersion ?? 0, sv);
+                }
+              }
+            }
+            if (parsed.packageFormatVersion !== undefined) {
+              if (!isSupportedContentSchemaVersion(parsed.packageFormatVersion)) {
+                pushIssue('error', 'UNSUPPORTED_SCHEMA_VERSION', 'manifest', {
+                  file: node.path,
+                  object: t('validator.obj.manifest'),
+                  property: 'packageFormatVersion',
+                  problem: t('validator.unsupportedSchemaProblem', {
+                    path: node.path,
+                    schemaVersion: String(parsed.packageFormatVersion),
+                    supported: supportedSchemaListText,
+                  }),
+                  suggestion: t('validator.unsupportedSchemaSuggestion', {
+                    supported: supportedSchemaListText,
+                  }),
+                  targetType: 'file',
+                  targetRef: node.path,
+                });
+              } else if (detectedSchemaVersion === undefined) {
+                const pv = parseSchemaVersionNumber(parsed.packageFormatVersion);
+                if (pv !== null) {
+                  detectedSchemaVersion = pv;
+                }
+              }
+            }
             if (parsed.modId && parsed.modId !== manifest.modId) {
               pushIssue('warning', 'MANIFEST_OUT_OF_SYNC', 'manifest', {
                 file: node.path,
@@ -603,7 +665,7 @@ export async function validateModProject(
     });
   }
 
-  // Supported game version check (authoritative SemVer >= 1.1.24)
+  // Supported game version check (authoritative SemVer >= MIN_SUPPORTED_GAME_VERSION; current: CURRENT_GAME_VERSION)
   const gameVer = manifest.supportedGameVersion?.trim() ?? '';
   const gameVerResult = validateSupportedGameVersion(gameVer);
   if (!gameVer) {
@@ -612,7 +674,10 @@ export async function validateModProject(
       object: manifest.name || t('validator.obj.manifest'),
       property: 'supportedGameVersion',
       problem: t('validator.missingGameVerProblem'),
-      suggestion: t('validator.missingGameVerSuggestion'),
+      suggestion: t('validator.missingGameVerSuggestion', {
+        currentGameVer: CURRENT_GAME_VERSION,
+        minGameVer: MIN_SUPPORTED_GAME_VERSION,
+      }),
       targetType: 'manifest',
     });
   } else if (!gameVerResult.valid) {
@@ -622,12 +687,86 @@ export async function validateModProject(
       property: 'supportedGameVersion',
       problem:
         gameVerResult.code === 'below_minimum'
-          ? t('validator.legacyGameVerProblem', { version: gameVer })
+          ? t('validator.legacyGameVerProblem', {
+              version: gameVer,
+              minGameVer: MIN_SUPPORTED_GAME_VERSION,
+              currentGameVer: CURRENT_GAME_VERSION,
+            })
           : t('validator.unsupportedGameVerProblem', { version: gameVer }),
       suggestion:
         gameVerResult.code === 'below_minimum'
-          ? t('validator.legacyGameVerSuggestion')
-          : t('validator.unsupportedGameVerSuggestion'),
+          ? t('validator.legacyGameVerSuggestion', {
+              minGameVer: MIN_SUPPORTED_GAME_VERSION,
+              currentGameVer: CURRENT_GAME_VERSION,
+            })
+          : t('validator.unsupportedGameVerSuggestion', {
+              minGameVer: MIN_SUPPORTED_GAME_VERSION,
+              currentGameVer: CURRENT_GAME_VERSION,
+            }),
+      targetType: 'manifest',
+    });
+  }
+
+  const minGameVer = manifest.minGameVersion?.trim() ?? '';
+  if (minGameVer) {
+    const minGameVerResult = validateSupportedGameVersion(minGameVer);
+    if (!minGameVerResult.valid) {
+      pushIssue('error', 'UNSUPPORTED_GAME_VERSION', 'manifest', {
+        file: activeManifestFile,
+        object: manifest.name || t('validator.obj.manifest'),
+        property: 'minGameVersion',
+        problem:
+          minGameVerResult.code === 'below_minimum'
+            ? t('validator.legacyGameVerProblem', {
+                version: minGameVer,
+                minGameVer: MIN_SUPPORTED_GAME_VERSION,
+                currentGameVer: CURRENT_GAME_VERSION,
+              })
+            : t('validator.unsupportedGameVerProblem', { version: minGameVer }),
+        suggestion: t('validator.legacyGameVerSuggestion', {
+          minGameVer: MIN_SUPPORTED_GAME_VERSION,
+          currentGameVer: CURRENT_GAME_VERSION,
+        }),
+        targetType: 'manifest',
+      });
+    }
+  }
+
+  const maxGameVer = manifest.maxGameVersion?.trim() ?? '';
+  if (maxGameVer) {
+    const maxCheck = validateMaxGameVersion(maxGameVer, gameVer || minGameVer || MIN_SUPPORTED_GAME_VERSION);
+    if (!maxCheck.valid) {
+      pushIssue('error', 'INVALID_MAX_GAME_VERSION', 'manifest', {
+        file: activeManifestFile,
+        object: manifest.name || t('validator.obj.manifest'),
+        property: 'maxGameVersion',
+        problem: t('validator.invalidMaxGameVerProblem', {
+          version: maxGameVer,
+        }),
+        suggestion: t('validator.invalidMaxGameVerSuggestion', {
+          currentGameVer: CURRENT_GAME_VERSION,
+        }),
+        targetType: 'manifest',
+      });
+    }
+  }
+
+  if (
+    manifest.packageFormatVersion !== undefined &&
+    !isSupportedContentSchemaVersion(manifest.packageFormatVersion)
+  ) {
+    pushIssue('error', 'UNSUPPORTED_SCHEMA_VERSION', 'manifest', {
+      file: activeManifestFile,
+      object: manifest.name || t('validator.obj.manifest'),
+      property: 'packageFormatVersion',
+      problem: t('validator.unsupportedSchemaProblem', {
+        path: activeManifestFile,
+        schemaVersion: String(manifest.packageFormatVersion),
+        supported: supportedSchemaListText,
+      }),
+      suggestion: t('validator.unsupportedSchemaSuggestion', {
+        supported: supportedSchemaListText,
+      }),
       targetType: 'manifest',
     });
   }
@@ -802,6 +941,30 @@ export async function validateModProject(
           try {
             const parsed = JSON.parse(file.content) as Record<string, unknown>;
             if (file.path === 'data/registry.json') {
+              if (parsed.schemaVersion !== undefined) {
+                if (!isSupportedContentSchemaVersion(parsed.schemaVersion)) {
+                  pushIssue('error', 'UNSUPPORTED_SCHEMA_VERSION', 'data', {
+                    file: file.path,
+                    object: t('validator.obj.registry'),
+                    property: 'schemaVersion',
+                    problem: t('validator.unsupportedSchemaProblem', {
+                      path: file.path,
+                      schemaVersion: String(parsed.schemaVersion),
+                      supported: supportedSchemaListText,
+                    }),
+                    suggestion: t('validator.unsupportedSchemaSuggestion', {
+                      supported: supportedSchemaListText,
+                    }),
+                    targetType: 'file',
+                    targetRef: file.path,
+                  });
+                } else {
+                  const sv = parseSchemaVersionNumber(parsed.schemaVersion);
+                  if (sv !== null) {
+                    detectedSchemaVersion = Math.max(detectedSchemaVersion ?? 0, sv);
+                  }
+                }
+              }
               if (!Array.isArray(parsed.entries)) {
                 pushIssue('error', 'INVALID_REGISTRY_SCHEMA', 'data', {
                   file: file.path,
@@ -814,19 +977,44 @@ export async function validateModProject(
                 });
               }
             } else if (
-              (Object.values(CONTENT_FILE_PATHS).includes(file.path) ||
-                Object.values(EXTENDED_CONFIG_FILE_PATHS).includes(file.path)) &&
-              !Array.isArray(parsed.entries)
+              Object.values(CONTENT_FILE_PATHS).includes(file.path) ||
+              Object.values(EXTENDED_CONFIG_FILE_PATHS).includes(file.path)
             ) {
-              pushIssue('error', 'INVALID_CONTENT_FILE_SCHEMA', 'data', {
-                file: file.path,
-                object: file.name,
-                property: 'entries',
-                problem: t('validator.invalidContentSchemaProblem', { path: file.path }),
-                suggestion: t('validator.invalidContentSchemaSuggestion'),
-                targetType: 'file',
-                targetRef: file.path,
-              });
+              if (parsed.schemaVersion !== undefined) {
+                if (!isSupportedContentSchemaVersion(parsed.schemaVersion)) {
+                  pushIssue('error', 'UNSUPPORTED_SCHEMA_VERSION', 'data', {
+                    file: file.path,
+                    object: file.name,
+                    property: 'schemaVersion',
+                    problem: t('validator.unsupportedSchemaProblem', {
+                      path: file.path,
+                      schemaVersion: String(parsed.schemaVersion),
+                      supported: supportedSchemaListText,
+                    }),
+                    suggestion: t('validator.unsupportedSchemaSuggestion', {
+                      supported: supportedSchemaListText,
+                    }),
+                    targetType: 'file',
+                    targetRef: file.path,
+                  });
+                } else {
+                  const sv = parseSchemaVersionNumber(parsed.schemaVersion);
+                  if (sv !== null) {
+                    detectedSchemaVersion = Math.max(detectedSchemaVersion ?? 0, sv);
+                  }
+                }
+              }
+              if (!Array.isArray(parsed.entries)) {
+                pushIssue('error', 'INVALID_CONTENT_FILE_SCHEMA', 'data', {
+                  file: file.path,
+                  object: file.name,
+                  property: 'entries',
+                  problem: t('validator.invalidContentSchemaProblem', { path: file.path }),
+                  suggestion: t('validator.invalidContentSchemaSuggestion'),
+                  targetType: 'file',
+                  targetRef: file.path,
+                });
+              }
             }
           } catch (err) {
             pushIssue('error', 'INVALID_JSON_SYNTAX', 'data', {
@@ -2143,6 +2331,15 @@ export async function validateModProject(
     modId: manifest.modId,
     version: manifest.version,
     targetPlatform,
+    currentGameVersion: CURRENT_GAME_VERSION,
+    minSupportedGameVersion: MIN_SUPPORTED_GAME_VERSION,
+    targetGameVersion: gameVer || CURRENT_GAME_VERSION,
+    modCreatorVersion: APP_VERSION,
+    contentSchemaVersion:
+      detectedSchemaVersion ??
+      (manifest.packageFormatVersion && isSupportedContentSchemaVersion(manifest.packageFormatVersion)
+        ? parseSchemaVersionNumber(manifest.packageFormatVersion) ?? CURRENT_MOD_CONTENT_SCHEMA_VERSION
+        : CURRENT_MOD_CONTENT_SCHEMA_VERSION),
     timestamp: new Date().toISOString(),
     durationMs: Math.max(8, Math.round(performance.now() - start)),
     errorCount,

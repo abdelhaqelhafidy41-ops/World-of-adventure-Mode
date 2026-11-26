@@ -27,7 +27,13 @@ export function generateModMarkdownDocs(project: ModProject): string {
   lines.push(`- **Mod ID**: \`${manifest.modId}\``);
   lines.push(`- **Version**: \`${manifest.version}\``);
   lines.push(`- **Author**: ${manifest.author}`);
-  lines.push(`- **Supported WoA Version**: ${manifest.supportedGameVersion} (min \`${compat.minGameVersion}\` – max \`${compat.maxGameVersion}\`)`);
+  lines.push(
+    `- **Supported WoA Version**: ${manifest.supportedGameVersion} (${
+      compat.maxGameVersion
+        ? `min \`${compat.minGameVersion}\` – max \`${compat.maxGameVersion}\``
+        : `min \`${compat.minGameVersion}\`+`
+    })`
+  );
   lines.push(`- **Mod API**: \`${compat.modApiSchema}\` v${compat.modApiVersion} (Package Format v${compat.packageFormatVersion})`);
   lines.push(`- **Execution Model**: Data-driven (requires native code: \`false\`)`);
   lines.push(`- **Target Platforms**: ${manifest.targetPlatforms.join(', ')}`);

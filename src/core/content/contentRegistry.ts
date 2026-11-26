@@ -1637,6 +1637,22 @@ export function buildStandardRegistryJson(
     })),
   ];
 
+  const referencedModels = new Set(
+    allEntries
+      .map((entry) => ('modelAsset' in entry && typeof entry.modelAsset === 'string' ? entry.modelAsset : ''))
+      .filter(Boolean)
+  );
+  const standaloneAssetEntries = assets
+    .filter((a) => !referencedModels.has(a.path))
+    .map((a) => ({
+      id: `${manifest.modId}:${a.id}`,
+      type: 'asset',
+      displayName: a.name,
+      category: a.modCategory ?? a.type,
+      modelAsset: a.path,
+      enabled: true,
+    }));
+
   return JSON.stringify(
     {
       schemaVersion: 2,
@@ -1667,7 +1683,7 @@ export function buildStandardRegistryJson(
         ...EXTENDED_CONFIG_FILE_PATHS,
         loadOrder: 'data/load_order.json',
       },
-      entries: allEntries,
+      entries: [...allEntries, ...standaloneAssetEntries],
     },
     null,
     2

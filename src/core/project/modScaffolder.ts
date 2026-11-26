@@ -1,10 +1,16 @@
 import {
+  CURRENT_GAME_VERSION,
+  CURRENT_MOD_CONTENT_SCHEMA_VERSION,
   DEFAULT_GAME_VERSION,
   MIN_SUPPORTED_GAME_VERSION,
+  SUPPORTED_MOD_CONTENT_SCHEMA_VERSIONS,
   WOA_MOD_API_VERSION,
   WOA_PACKAGE_FORMAT_VERSION,
   compareGameVersionTuples,
+  isSupportedContentSchemaVersion,
   parseGameVersion,
+  parseSchemaVersionNumber,
+  validateMaxGameVersion,
   validateSupportedGameVersion,
   type GameVersionValidationResult,
   type ParsedGameVersion,
@@ -28,10 +34,16 @@ import {
 } from '@/src/types/mod';
 
 export {
+  CURRENT_GAME_VERSION,
+  CURRENT_MOD_CONTENT_SCHEMA_VERSION,
   MIN_SUPPORTED_GAME_VERSION,
   DEFAULT_GAME_VERSION,
+  SUPPORTED_MOD_CONTENT_SCHEMA_VERSIONS,
   parseGameVersion,
   compareGameVersionTuples,
+  isSupportedContentSchemaVersion,
+  parseSchemaVersionNumber,
+  validateMaxGameVersion,
   validateSupportedGameVersion,
   type GameVersionValidationResult,
   type ParsedGameVersion,
@@ -50,9 +62,9 @@ export const MOD_CATEGORIES: ModCategory[] = [
 
 export const SUPPORTED_GAME_VERSIONS: string[] = [
   '1.1.24',
+  CURRENT_GAME_VERSION,
+  '1.1.26',
   '1.2.0',
-  '1.8.0',
-  '1.9.0',
   '2.0.0',
 ];
 
@@ -181,11 +193,7 @@ export function createModProject(input: CreateModInput): ModProject {
 
   const resolvedGameVersion =
     input.supportedGameVersion?.trim() || DEFAULT_GAME_VERSION;
-  const parsedGameVersion = parseGameVersion(resolvedGameVersion);
-  const resolvedMaxGameVersion =
-    parsedGameVersion && parsedGameVersion.major >= 2
-      ? `${parsedGameVersion.major}.x`
-      : '2.x';
+  const resolvedMaxGameVersion = input.maxGameVersion?.trim();
 
   const manifest: ModManifest = {
     modId,
@@ -203,7 +211,7 @@ export function createModProject(input: CreateModInput): ModProject {
       : {}),
     supportedGameVersion: resolvedGameVersion,
     minGameVersion: MIN_SUPPORTED_GAME_VERSION,
-    maxGameVersion: resolvedMaxGameVersion,
+    ...(resolvedMaxGameVersion ? { maxGameVersion: resolvedMaxGameVersion } : {}),
     modApiVersion: WOA_MOD_API_VERSION,
     packageFormatVersion: WOA_PACKAGE_FORMAT_VERSION,
     categories,
@@ -275,7 +283,7 @@ export function createModProject(input: CreateModInput): ModProject {
 
   const registryJson = JSON.stringify(
     {
-      schemaVersion: 1,
+      schemaVersion: CURRENT_MOD_CONTENT_SCHEMA_VERSION,
       modId: manifest.modId,
       categories: manifest.categories,
       entries: [

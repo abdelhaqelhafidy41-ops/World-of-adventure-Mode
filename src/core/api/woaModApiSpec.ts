@@ -5,8 +5,11 @@ export const WOA_MOD_API_SCHEMA = 'woa.mod-api.v1';
 export const WOA_MOD_API_VERSION = '1.0.0';
 export const WOA_PACKAGE_FORMAT_VERSION = 2;
 export const WOA_COMPATIBLE_PACKAGE_FORMATS = [1, 2];
+export const CURRENT_GAME_VERSION = '1.1.25';
 export const MIN_SUPPORTED_GAME_VERSION = '1.1.24';
-export const DEFAULT_GAME_VERSION = '1.1.24';
+export const DEFAULT_GAME_VERSION = CURRENT_GAME_VERSION;
+export const CURRENT_MOD_CONTENT_SCHEMA_VERSION = 2;
+export const SUPPORTED_MOD_CONTENT_SCHEMA_VERSIONS = [1, 2] as const;
 
 export interface ParsedGameVersion {
   major: number;
@@ -81,6 +84,62 @@ export function validateSupportedGameVersion(
   return { valid: true, parsed };
 }
 
+export function validateMaxGameVersion(
+  maxVersion: string | undefined | null,
+  minOrTargetVersion?: string | null
+): {
+  valid: boolean;
+  code?: 'invalid_format' | 'below_minimum' | 'below_target';
+  parsed?: ParsedGameVersion;
+} {
+  const trimmed = (maxVersion ?? '').trim();
+  if (!trimmed) {
+    return { valid: true };
+  }
+  const parsed = parseGameVersion(trimmed);
+  if (!parsed) {
+    return { valid: false, code: 'invalid_format' };
+  }
+  if (compareGameVersionTuples(parsed, MIN_GAME_VERSION_TUPLE) < 0) {
+    return { valid: false, code: 'below_minimum', parsed };
+  }
+  const baseline = minOrTargetVersion ? parseGameVersion(minOrTargetVersion) : null;
+  if (baseline && compareGameVersionTuples(parsed, baseline) < 0) {
+    return { valid: false, code: 'below_target', parsed };
+  }
+  return { valid: true, parsed };
+}
+
+export function parseSchemaVersionNumber(raw: unknown): number | null {
+  if (typeof raw === 'number' && Number.isInteger(raw)) {
+    return raw;
+  }
+  if (typeof raw === 'string') {
+    const match = /^v?(\d+)$/i.exec(raw.trim());
+    if (match) {
+      return Number(match[1]);
+    }
+  }
+  return null;
+}
+
+export function isSupportedContentSchemaVersion(raw: unknown): boolean {
+  const num = parseSchemaVersionNumber(raw);
+  return num !== null && (SUPPORTED_MOD_CONTENT_SCHEMA_VERSIONS as readonly number[]).includes(num);
+}
+
+export function getCentralGameCompatibilityConfig() {
+  return {
+    currentGameVersion: CURRENT_GAME_VERSION,
+    minSupportedGameVersion: MIN_SUPPORTED_GAME_VERSION,
+    modApiSchema: WOA_MOD_API_SCHEMA,
+    modApiVersion: WOA_MOD_API_VERSION,
+    packageFormatVersion: WOA_PACKAGE_FORMAT_VERSION,
+    currentContentSchemaVersion: CURRENT_MOD_CONTENT_SCHEMA_VERSION,
+    supportedContentSchemaVersions: [...SUPPORTED_MOD_CONTENT_SCHEMA_VERSIONS],
+  };
+}
+
 export interface ModApiSchemaField {
   name: string;
   type: string;
@@ -111,7 +170,7 @@ export const WOA_COMPATIBILITY_MATRIX: PackageCompatibilityRule[] = [
   {
     formatVersion: 1,
     label: '.woamod Format v1 (Legacy Manifest)',
-    gameVersions: '1.7.x – 1.9.x',
+    gameVersions: `${MIN_SUPPORTED_GAME_VERSION}+ (Legacy)`,
     supportedFiles: [
       'mod.json / mod.manifest.json',
       'data/items.json, data/weapons.json, data/armor.json, data/npcs.json, data/monsters.json',
@@ -119,12 +178,12 @@ export const WOA_COMPATIBILITY_MATRIX: PackageCompatibilityRule[] = [
       'assets/models/*, assets/textures/*, assets/sounds/*',
     ],
     migrationBehavior:
-      'Automatically upgraded on load by WoA 1.8+ / 2.0: missing extended registries (lootTables, dialogues, worldObjects, animations, audio, materials) initialize empty without breaking existing IDs.',
+      'Automatically upgraded on load by World of Adventure 1.1.24+: missing extended registries (lootTables, dialogues, worldObjects, animations, audio, materials) initialize empty without breaking existing IDs.',
   },
   {
     formatVersion: 2,
     label: '.woamod Format v2 (Data-Driven Mod API v1)',
-    gameVersions: '1.8.x – 2.0+',
+    gameVersions: `${MIN_SUPPORTED_GAME_VERSION}+ (Current: ${CURRENT_GAME_VERSION})`,
     supportedFiles: [
       'mod.json ($schema: woa.mod.v1) + compatibility.json',
       'All core content registries + data/characters.json + data/creatures.json',
@@ -156,16 +215,18 @@ export const WOA_MOD_API_DOMAINS: ModApiDomainSpec[] = [
     exampleJson: JSON.stringify(
       {
         $schema: 'woa.mod.v1',
+        schemaVersion: 2,
         packageFormatVersion: 2,
         modApiSchema: 'woa.mod-api.v1',
         modApiVersion: '1.0.0',
         modId: 'com.adventureforge.skyreach_relics',
         version: '1.2.0',
+        supportedGameVersion: CURRENT_GAME_VERSION,
         compatibility: {
           executionMode: 'data-driven',
           requiresNativeCode: false,
-          minGameVersion: '1.1.24',
-          maxGameVersion: '2.x',
+          supportedGameVersion: CURRENT_GAME_VERSION,
+          minGameVersion: MIN_SUPPORTED_GAME_VERSION,
           compatiblePackageFormats: [1, 2],
         },
         loadOrder: {
@@ -322,17 +383,15 @@ export function buildModCompatibilityInfo(
   manifest: ModManifest,
   targetPlatform: TargetPlatform
 ): ModCompatibilityInfo {
-  const parsedTarget = parseGameVersion(manifest.supportedGameVersion ?? '');
-  const defaultMax =
-    parsedTarget && parsedTarget.major >= 2 ? `${parsedTarget.major}.x` : '2.x';
+  const cleanMax = manifest.maxGameVersion?.trim();
   return {
     modApiSchema: WOA_MOD_API_SCHEMA,
     modApiVersion: manifest.modApiVersion || WOA_MOD_API_VERSION,
     packageFormatVersion: manifest.packageFormatVersion || WOA_PACKAGE_FORMAT_VERSION,
     compatiblePackageFormats: [...WOA_COMPATIBLE_PACKAGE_FORMATS],
     supportedGameVersion: manifest.supportedGameVersion,
-    minGameVersion: manifest.minGameVersion || MIN_SUPPORTED_GAME_VERSION,
-    maxGameVersion: manifest.maxGameVersion || defaultMax,
+    minGameVersion: manifest.minGameVersion?.trim() || MIN_SUPPORTED_GAME_VERSION,
+    ...(cleanMax ? { maxGameVersion: cleanMax } : {}),
     executionModel: 'data-driven',
     requiresNativeCode: false,
     backwardCompatible: true,

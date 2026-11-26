@@ -166,7 +166,7 @@ export interface ModCompatibilityInfo {
   compatiblePackageFormats: number[];
   supportedGameVersion: string;
   minGameVersion: string;
-  maxGameVersion: string;
+  maxGameVersion?: string;
   executionModel: 'data-driven';
   requiresNativeCode: boolean;
   backwardCompatible: boolean;
@@ -231,6 +231,7 @@ export interface CreateModInput {
   description: string;
   descriptionAr?: string;
   supportedGameVersion: string;
+  maxGameVersion?: string;
   categories: ModCategory[];
   targetPlatforms?: TargetPlatform[];
   templateId?: ModTemplateId;
@@ -289,6 +290,11 @@ export interface ModValidationReport {
   checkedFiles: number;
   checkedAssets: number;
   checkedObjects: number;
+  currentGameVersion?: string;
+  minSupportedGameVersion?: string;
+  targetGameVersion?: string;
+  modCreatorVersion?: string;
+  contentSchemaVersion?: number;
 }
 
 export interface BuildDiagnostic {

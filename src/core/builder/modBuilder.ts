@@ -1,5 +1,7 @@
 import JSZip from 'jszip';
 import {
+  CURRENT_GAME_VERSION,
+  CURRENT_MOD_CONTENT_SCHEMA_VERSION,
   DEFAULT_GAME_VERSION,
   MIN_SUPPORTED_GAME_VERSION,
   WOA_COMPATIBLE_PACKAGE_FORMATS,
@@ -7,7 +9,8 @@ import {
   WOA_MOD_API_VERSION,
   WOA_PACKAGE_FORMAT_VERSION,
   buildModCompatibilityInfo,
-  parseGameVersion,
+  isSupportedContentSchemaVersion,
+  parseSchemaVersionNumber,
 } from '@/src/core/api/woaModApiSpec';
 import {
   getAssetFormatSpec,
@@ -274,6 +277,25 @@ async function collectRequiredWorkspaceAssetPaths(
     addRef(m.normalTexture);
   });
   (contents.worldObjects ?? []).forEach((wo) => addRef(wo.model));
+
+  // Collect asset references declared in data/registry.json (e.g. scaffolded modelAsset entries)
+  const registryNode = project.files.find((f) => f.path === 'data/registry.json');
+  if (registryNode?.content) {
+    try {
+      const regParsed = JSON.parse(registryNode.content) as {
+        entries?: Array<{ modelAsset?: unknown }>;
+      };
+      if (Array.isArray(regParsed.entries)) {
+        for (const entry of regParsed.entries) {
+          if (typeof entry?.modelAsset === 'string') {
+            addRef(entry.modelAsset);
+          }
+        }
+      }
+    } catch {
+      // validation reports malformed registry.json
+    }
+  }
 
   // Collect asset references inside scripts (e.g. ctx.registerAsset('assets/models/foo.woa3d'))
   for (const file of project.files) {
@@ -621,11 +643,12 @@ function buildRuntimeModJson(
   return JSON.stringify(
     {
       $schema: 'woa.mod.v1',
-      schemaVersion: WOA_PACKAGE_FORMAT_VERSION,
+      schemaVersion: CURRENT_MOD_CONTENT_SCHEMA_VERSION,
       packageFormatVersion: compatibility.packageFormatVersion,
       compatiblePackageFormats: compatibility.compatiblePackageFormats,
       modApiSchema: WOA_MOD_API_SCHEMA,
       modApiVersion: compatibility.modApiVersion,
+      currentGameVersion: CURRENT_GAME_VERSION,
       modId: manifest.modId,
       name: manifest.name,
       version: manifest.version,
@@ -635,7 +658,7 @@ function buildRuntimeModJson(
       ...(manifest.translations ? { translations: manifest.translations } : {}),
       supportedGameVersion: manifest.supportedGameVersion,
       minGameVersion: compatibility.minGameVersion,
-      maxGameVersion: compatibility.maxGameVersion,
+      ...(compatibility.maxGameVersion ? { maxGameVersion: compatibility.maxGameVersion } : {}),
       categories: manifest.categories,
       targetPlatforms: manifest.targetPlatforms,
       buildTarget: targetPlatform,
@@ -847,6 +870,8 @@ async function runBuildPipeline(
       try {
         const parsedWoa3d = parseAndValidateWoa3dContent(rawContent);
         rawContent = serializeWoa3dAsset({
+          $schema: parsedWoa3d.$schema,
+          schemaVersion: parsedWoa3d.schemaVersion,
           format: 'WOA3D',
           preset: parsedWoa3d.preset,
           modCategory: asset.modCategory ?? parsedWoa3d.modCategory,
@@ -1705,6 +1730,7 @@ export async function importModFromFile(file: File): Promise<ModProject> {
   const manifestRaw = await readZipEntryTextBounded(manifestEntry);
   const rawManifest = safeJsonParse<
     ModManifest & {
+      schemaVersion?: unknown;
       localized?: { name?: LocalizedTextMap; description?: LocalizedTextMap };
       compatibility?: { requiresNativeCode?: boolean };
     }
@@ -1714,6 +1740,23 @@ export async function importModFromFile(file: File): Promise<ModProject> {
       'Security violation detected. Native code execution is not permitted inside data-driven .woamod mods.'
     );
   }
+  if (
+    rawManifest.schemaVersion !== undefined &&
+    !isSupportedContentSchemaVersion(rawManifest.schemaVersion)
+  ) {
+    throw new Error(
+      `Unsupported mod schemaVersion "${String(rawManifest.schemaVersion)}" (supported: v1, v2).`
+    );
+  }
+  if (
+    rawManifest.packageFormatVersion !== undefined &&
+    !isSupportedContentSchemaVersion(rawManifest.packageFormatVersion)
+  ) {
+    throw new Error(
+      `Unsupported packageFormatVersion "${String(rawManifest.packageFormatVersion)}" (supported: v1, v2).`
+    );
+  }
+
   const safeModId = sanitizeSafeModId(rawManifest.modId);
   const mergedName = mergeLocalizedField(
     rawManifest.name,
@@ -1735,11 +1778,14 @@ export async function importModFromFile(file: File): Promise<ModProject> {
     typeof rawManifest.supportedGameVersion === 'string'
       ? rawManifest.supportedGameVersion.trim()
       : '';
-  const parsedImportedVer = parseGameVersion(importedGameVersion);
-  const defaultImportedMax =
-    parsedImportedVer && parsedImportedVer.major >= 2
-      ? `${parsedImportedVer.major}.x`
-      : '2.x';
+  const importedMaxGameVersion =
+    typeof rawManifest.maxGameVersion === 'string' && rawManifest.maxGameVersion.trim()
+      ? rawManifest.maxGameVersion.trim()
+      : undefined;
+  const resolvedPackageFormat =
+    parseSchemaVersionNumber(rawManifest.packageFormatVersion) ??
+    parseSchemaVersionNumber(rawManifest.schemaVersion) ??
+    WOA_COMPATIBLE_PACKAGE_FORMATS[0];
 
   const manifest: ModManifest = {
     modId: safeModId,
@@ -1750,10 +1796,9 @@ export async function importModFromFile(file: File): Promise<ModProject> {
     ...(manifestTranslations ? { translations: manifestTranslations } : {}),
     supportedGameVersion: importedGameVersion,
     minGameVersion: rawManifest.minGameVersion || MIN_SUPPORTED_GAME_VERSION,
-    maxGameVersion: rawManifest.maxGameVersion || defaultImportedMax,
+    ...(importedMaxGameVersion ? { maxGameVersion: importedMaxGameVersion } : {}),
     modApiVersion: rawManifest.modApiVersion || WOA_MOD_API_VERSION,
-    packageFormatVersion:
-      rawManifest.packageFormatVersion || WOA_COMPATIBLE_PACKAGE_FORMATS[0],
+    packageFormatVersion: resolvedPackageFormat,
     categories: rawManifest.categories?.length ? rawManifest.categories : ['Items'],
     entryPoint: sanitizeManifestEntryPoint(rawManifest.entryPoint),
     targetPlatforms: rawManifest.targetPlatforms?.length

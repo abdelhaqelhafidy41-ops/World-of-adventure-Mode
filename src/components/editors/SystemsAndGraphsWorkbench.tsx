@@ -26,6 +26,7 @@ import {
 import { AnyWorkbenchKind } from '@/src/components/content/ContentEditorsWorkbench';
 import {
   getWoaCompatibilityMatrix,
+  MIN_SUPPORTED_GAME_VERSION,
   WOA_MOD_API_SCHEMA,
   WOA_MOD_API_VERSION,
   WOA_PACKAGE_FORMAT_VERSION,
@@ -1960,7 +1961,7 @@ export const SystemsAndGraphsWorkbench: React.FC<SystemsAndGraphsWorkbenchProps>
                   <input
                     type="text"
                     dir="ltr"
-                    value={project.manifest.minGameVersion ?? '1.8.0'}
+                    value={project.manifest.minGameVersion ?? MIN_SUPPORTED_GAME_VERSION}
                     onChange={(e) =>
                       onUpdateManifest({ minGameVersion: e.target.value })
                     }
@@ -1974,10 +1975,12 @@ export const SystemsAndGraphsWorkbench: React.FC<SystemsAndGraphsWorkbenchProps>
                   <input
                     type="text"
                     dir="ltr"
-                    value={project.manifest.maxGameVersion ?? '2.0.x'}
-                    onChange={(e) =>
-                      onUpdateManifest({ maxGameVersion: e.target.value })
-                    }
+                    value={project.manifest.maxGameVersion ?? ''}
+                    placeholder="Optional"
+                    onChange={(e) => {
+                      const trimmed = e.target.value.trim();
+                      onUpdateManifest({ maxGameVersion: trimmed || undefined });
+                    }}
                     className="w-full px-2.5 py-1.5 text-xs font-mono rounded border border-slate-300 bg-white text-slate-900 dark:border-white/10 dark:bg-[#0B0F17] dark:text-slate-100"
                   />
                 </div>

@@ -8,6 +8,12 @@ import {
   ShieldAlert,
   XCircle,
 } from 'lucide-react';
+import {
+  CURRENT_GAME_VERSION,
+  CURRENT_MOD_CONTENT_SCHEMA_VERSION,
+  MIN_SUPPORTED_GAME_VERSION,
+} from '@/src/core/api/woaModApiSpec';
+import { APP_VERSION } from '@/src/core/version';
 import { useI18n } from '@/src/i18n';
 import {
   ModValidationReport,
@@ -166,6 +172,42 @@ export const ValidationPanel: React.FC<ValidationPanelProps> = ({
           />
           {isValidating ? t('validation.running') : t('validation.runBtn')}
         </button>
+      </div>
+
+      {/* Authoritative Game / App / Schema Compatibility Strip */}
+      <div className="px-4 py-2 border-b border-slate-200 dark:border-white/10 bg-slate-50/70 dark:bg-[#0B0F17]/70 flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px] text-slate-600 dark:text-slate-400">
+        <span className="inline-flex items-center gap-1.5">
+          <span>{t('validation.metaGameVer')}:</span>
+          <strong dir="ltr" className="font-mono tabular-nums text-slate-900 dark:text-slate-100">
+            {report?.currentGameVersion ?? CURRENT_GAME_VERSION}
+          </strong>
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span>{t('validation.metaMinGameVer')}:</span>
+          <strong dir="ltr" className="font-mono tabular-nums text-slate-900 dark:text-slate-100">
+            {report?.minSupportedGameVersion ?? MIN_SUPPORTED_GAME_VERSION}
+          </strong>
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span>{t('validation.metaCreatorVer')}:</span>
+          <strong dir="ltr" className="font-mono tabular-nums text-slate-900 dark:text-slate-100">
+            {report?.modCreatorVersion ?? APP_VERSION}
+          </strong>
+        </span>
+        {report?.version && (
+          <span className="inline-flex items-center gap-1.5">
+            <span>{t('validation.metaModVer')}:</span>
+            <strong dir="ltr" className="font-mono tabular-nums text-slate-900 dark:text-slate-100">
+              {report.version}
+            </strong>
+          </span>
+        )}
+        <span className="inline-flex items-center gap-1.5">
+          <span>{t('validation.metaSchemaVer')}:</span>
+          <strong dir="ltr" className="font-mono tabular-nums text-slate-900 dark:text-slate-100">
+            v{report?.contentSchemaVersion ?? CURRENT_MOD_CONTENT_SCHEMA_VERSION}
+          </strong>
+        </span>
       </div>
 
       {/* Filter & Search Toolbar */}

@@ -1,9 +1,10 @@
 import React from 'react';
 import { Plus, RotateCcw, Trash2 } from 'lucide-react';
 import {
-  MOD_CATEGORIES,
-  SUPPORTED_GAME_VERSIONS,
-} from '@/src/core/project/modScaffolder';
+  CURRENT_GAME_VERSION,
+  validateSupportedGameVersion,
+} from '@/src/core/api/woaModApiSpec';
+import { MOD_CATEGORIES } from '@/src/core/project/modScaffolder';
 import { type TranslationKey, useI18n } from '@/src/i18n';
 import {
   ASSET_MOD_CATEGORIES,
@@ -184,25 +185,34 @@ export const PropertiesInspector: React.FC<PropertiesInspectorProps> = ({
             <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
               {t('inspector.manifestGameVer')}
             </label>
-            <select
-              dir="ltr"
-              value={manifest.supportedGameVersion}
-              onChange={(e) =>
-                onUpdateManifest({ supportedGameVersion: e.target.value })
-              }
-              className="w-full px-2.5 py-1.5 rounded border border-slate-300 bg-white text-slate-900 dark:border-white/10 dark:bg-[#0B0F17] dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            >
-              {!SUPPORTED_GAME_VERSIONS.includes(manifest.supportedGameVersion) && (
-                <option value={manifest.supportedGameVersion}>
-                  {manifest.supportedGameVersion || t('inspector.emptyValue')}
-                </option>
-              )}
-              {SUPPORTED_GAME_VERSIONS.map((v) => (
-                <option key={v} value={v}>
-                  {v}
-                </option>
-              ))}
-            </select>
+            {(() => {
+              const gameVerCheck = validateSupportedGameVersion(manifest.supportedGameVersion);
+              return (
+                <>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    dir="ltr"
+                    value={manifest.supportedGameVersion}
+                    onChange={(e) =>
+                      onUpdateManifest({ supportedGameVersion: e.target.value })
+                    }
+                    placeholder={CURRENT_GAME_VERSION}
+                    aria-invalid={!gameVerCheck.valid}
+                    className={`w-full px-2.5 py-1.5 font-mono tabular-nums rounded border bg-white text-slate-900 dark:bg-[#0B0F17] dark:text-slate-100 focus:outline-none focus:ring-1 ${
+                      gameVerCheck.valid
+                        ? 'border-slate-300 focus:ring-blue-500 dark:border-white/10'
+                        : 'border-red-500 focus:ring-red-500 dark:border-red-500/70'
+                    }`}
+                  />
+                  {!gameVerCheck.valid && (
+                    <p className="mt-1 text-[11px] text-red-600 dark:text-red-400">
+                      {gameVerCheck.error}
+                    </p>
+                  )}
+                </>
+              );
+            })()}
           </div>
 
           <div>

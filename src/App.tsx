@@ -43,7 +43,6 @@ import {
 } from '@/src/core/project/modScaffolder';
 import {
   DEFAULT_EDITOR_SETTINGS,
-  deleteAssetBlob,
   deleteProject,
   deleteProjectBackup,
   duplicateAssetBlob,
@@ -1055,10 +1054,6 @@ export default function App() {
     if (!activeProject) return;
     const target = activeProject.assets.find((a) => a.id === assetId);
     if (!target) return;
-
-    if (target.blobKey) {
-      await deleteAssetBlob(target.blobKey);
-    }
 
     const nextAssets = activeProject.assets.filter((a) => a.id !== assetId);
     const nextFiles = activeProject.files.filter((f) => f.assetId !== assetId);

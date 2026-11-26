@@ -544,14 +544,22 @@ export const PropertiesInspector: React.FC<PropertiesInspectorProps> = ({
         {asset.type === '3d-model' && (
           <section className="pt-3 border-t border-slate-200 dark:border-white/10 space-y-2.5">
             <div className="flex items-center justify-between">
-              <span className="font-semibold text-slate-800 dark:text-slate-200">
-                {t('inspector.transformTitle')}
-              </span>
+              <div className="flex items-center gap-1.5">
+                <span className="font-semibold text-slate-800 dark:text-slate-200">
+                  {t('inspector.transformTitle')}
+                </span>
+                {asset.locked && (
+                  <span className="px-1.5 py-0.5 text-[10px] rounded bg-amber-500/15 text-amber-600 dark:text-amber-400">
+                    {t('ctx3d.lockedBadge')}
+                  </span>
+                )}
+              </div>
               <button
                 type="button"
+                disabled={Boolean(asset.locked)}
                 onClick={resetTransform}
                 title={t('inspector.resetTransform')}
-                className="inline-flex items-center gap-1 text-[11px] text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
+                className="inline-flex items-center gap-1 text-[11px] text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <RotateCcw className="w-3 h-3" />
                 {t('inspector.resetBtn')}
@@ -573,7 +581,9 @@ export const PropertiesInspector: React.FC<PropertiesInspectorProps> = ({
                   {(['x', 'y', 'z'] as const).map((axis) => (
                     <label
                       key={axis}
-                      className="flex items-center rounded border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-[#0B0F17] px-1.5 py-1"
+                      className={`flex items-center rounded border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-[#0B0F17] px-1.5 py-1 ${
+                        asset.locked ? 'opacity-50' : ''
+                      }`}
                     >
                       <span
                         className={`text-[10px] font-mono font-semibold uppercase me-1.5 ${
@@ -589,12 +599,13 @@ export const PropertiesInspector: React.FC<PropertiesInspectorProps> = ({
                       <input
                         type="number"
                         dir="ltr"
+                        disabled={Boolean(asset.locked)}
                         step={group === 'rotation' ? 5 : 0.1}
                         value={asset.transform[group][axis]}
                         onChange={(e) =>
                           updateTransform(group, axis, parseFloat(e.target.value))
                         }
-                        className="w-full bg-transparent text-[11px] font-mono tabular-nums text-slate-900 dark:text-slate-100 focus:outline-none"
+                        className="w-full bg-transparent text-[11px] font-mono tabular-nums text-slate-900 dark:text-slate-100 focus:outline-none disabled:cursor-not-allowed"
                       />
                     </label>
                   ))}

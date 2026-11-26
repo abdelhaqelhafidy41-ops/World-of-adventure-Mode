@@ -99,11 +99,117 @@ export interface ExtractedMaterialInfo {
   hasTexture: boolean;
 }
 
+export type SceneStructureOp =
+  | {
+      kind: 'duplicate';
+      newId: string;
+      sourceId: string;
+      name: string;
+      isInstance?: boolean;
+    }
+  | {
+      kind: 'group';
+      newId: string;
+      name: string;
+      childIds: string[];
+    }
+  | {
+      kind: 'ungroup';
+      groupId: string;
+    }
+  | {
+      kind: 'delete';
+      nodeId: string;
+    }
+  | {
+      kind: 'applyTransform';
+      nodeId: string;
+      target: 'all' | 'position' | 'rotation' | 'scale';
+    }
+  | {
+      kind: 'centerPivot';
+      nodeId: string;
+    }
+  | {
+      kind: 'resetPivot';
+      nodeId: string;
+    }
+  | {
+      kind: 'makeUnique';
+      nodeId: string;
+    }
+  | {
+      kind: 'pasteJson';
+      newId: string;
+      objectJson: Record<string, unknown>;
+    };
+
+export interface SceneNodeSnapshot {
+  id: string;
+  name: string;
+  type: 'Group' | 'Mesh' | 'Object3D';
+  parentId: string | null;
+  orderIndex: number;
+  visible: boolean;
+  locked: boolean;
+  collection?: string;
+  transform: AssetTransform;
+  materialOverride?: {
+    name?: string;
+    color?: string;
+    roughness?: number;
+    metalness?: number;
+    emissive?: string;
+    emissiveIntensity?: number;
+    wireframe?: boolean;
+    textureAssetId?: string | null;
+    textureName?: string | null;
+  };
+  clonedFromNodeId?: string;
+  isCustomGroup?: boolean;
+  childIds?: string[];
+}
+
+export interface SceneEditorState {
+  revision: number;
+  deletedNodeIds: string[];
+  nodeSnapshots: Record<string, SceneNodeSnapshot>;
+  customGroups: {
+    id: string;
+    name: string;
+    parentId: string | null;
+    childIds: string[];
+    transform: AssetTransform;
+    visible: boolean;
+    locked: boolean;
+    collection?: string;
+  }[];
+  duplicatedNodes: {
+    id: string;
+    sourceNodeId: string;
+    parentId: string | null;
+    name: string;
+    transform: AssetTransform;
+    visible: boolean;
+    locked: boolean;
+    collection?: string;
+    isInstance?: boolean;
+  }[];
+  structureOps?: SceneStructureOp[];
+  rootMirror?: { x: boolean; y: boolean; z: boolean };
+}
+
 export interface SceneHierarchyNode {
   id: string;
   name: string;
   type: 'Group' | 'Mesh' | 'Object3D';
   visible: boolean;
+  locked?: boolean;
+  collection?: string;
+  hasTexture?: boolean;
+  materialName?: string;
+  isSharedGeometry?: boolean;
+  isSharedMaterial?: boolean;
   triangleCount: number;
   children: SceneHierarchyNode[];
 }
@@ -130,6 +236,10 @@ export interface ModAsset {
   collision?: AssetCollisionConfig;
   transform: AssetTransform;
   material: AssetMaterialConfig;
+  locked?: boolean;
+  hidden?: boolean;
+  collection?: string;
+  sceneState?: SceneEditorState;
   metadata: Record<string, string | number | boolean>;
   createdAt: string;
   updatedAt?: string;

@@ -53,6 +53,7 @@ import {
   AssetTransform,
   ConsoleEntry,
   EditorSettings,
+  ExtractedMaterialInfo,
   LightingPreset,
   LogLevel,
   MaterialPreviewMode,
@@ -62,7 +63,9 @@ import {
   ModManifest,
   ModProject,
   ModValidationReport,
+  ModelDimensions,
   ProjectBackupRecord,
+  SceneEditorState,
   SceneHierarchyNode,
   ValidationIssue,
 } from '@/src/types/mod';
@@ -396,6 +399,8 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
   // 3D Editor state
   const [hierarchy, setHierarchy] = useState<SceneHierarchyNode[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
+  const [selectionCleared, setSelectionCleared] = useState(false);
   const [showBounds, setShowBounds] = useState(true);
   const [showCollision, setShowCollision] = useState(false);
   const [showPivot, setShowPivot] = useState(true);
@@ -413,6 +418,15 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
 
   const selectedNodeName = findHierarchyNodeName(hierarchy, selectedNodeId);
 
+  const handleSelectNodes = useCallback(
+    (nodeIds: string[], primaryId: string | null, cleared = false) => {
+      setSelectedNodeIds(nodeIds);
+      setSelectedNodeId(primaryId);
+      setSelectionCleared(cleared);
+    },
+    []
+  );
+
   const handleSelectFileNode = (node: ModFileNode) => {
     setSelectedFilePath(node.path);
     if (
@@ -422,7 +436,7 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
       node.assetId
     ) {
       onSelectAsset(node.assetId);
-      setSelectedNodeId(null);
+      handleSelectNodes([], null, false);
       setCenterTab('viewport');
       setMobilePane('viewport');
     } else {
@@ -442,7 +456,7 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
 
   const handleSelectAssetItem = (assetId: string) => {
     onSelectAsset(assetId);
-    setSelectedNodeId(null);
+    handleSelectNodes([], null, false);
     const matchingFile = project.files.find((f) => f.assetId === assetId);
     if (matchingFile) {
       setSelectedFilePath(matchingFile.path);
@@ -458,7 +472,6 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
 
   const handleModelInspected = (info: ModelInspectionResult) => {
     setHierarchy(info.hierarchy);
-    setSelectedNodeId(null);
 
     const current = project.assets.find((a) => a.id === info.assetId);
     if (!current) return;
@@ -481,13 +494,55 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
     }
   };
 
+  const handleHierarchyChanged = (
+    nextHierarchy: SceneHierarchyNode[],
+    sceneState: SceneEditorState,
+    stats: {
+      dimensions: ModelDimensions;
+      triangleEstimate: number;
+      materials: ExtractedMaterialInfo[];
+    }
+  ) => {
+    setHierarchy(nextHierarchy);
+    if (!activeAsset) return;
+    onUpdateAsset(activeAsset.id, {
+      sceneState,
+      dimensions: stats.dimensions,
+      triangleEstimate: stats.triangleEstimate,
+      extractedMaterials: stats.materials,
+    });
+  };
+
   const handleToggleNodeVisibility = (nodeId: string, visible: boolean) => {
     setHierarchy((prev) => updateHierarchyVisibility(prev, nodeId, visible));
     viewportRef.current?.setNodeVisibility(nodeId, visible);
   };
 
+  const handleShowAllNodes = () => {
+    if (activeAsset?.hidden) {
+      onUpdateAsset(activeAsset.id, { hidden: false });
+    }
+    viewportRef.current?.showAllNodes();
+  };
+
   const handleFocusNode = (nodeId: string | null) => {
     viewportRef.current?.focusNode(nodeId);
+  };
+
+  const handleHierarchyContextMenu = (
+    clientX: number,
+    clientY: number,
+    nodeId: string | null
+  ) => {
+    viewportRef.current?.openContextMenuAt(clientX, clientY, nodeId);
+  };
+
+  const handleRenameFromHierarchy = (nodeId: string | null, newName: string) => {
+    if (nodeId) {
+      viewportRef.current?.renameNode(nodeId, newName);
+    } else if (activeAsset) {
+      onRenameAsset(activeAsset.id, newName);
+    }
   };
 
   const handleWorkspaceDrop = async (e: React.DragEvent) => {
@@ -626,11 +681,19 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                 assetName={
                   activeAsset?.type === '3d-model' ? activeAsset.name : null
                 }
+                assetLocked={activeAsset?.locked}
+                assetHidden={activeAsset?.hidden}
+                assetCollection={activeAsset?.collection}
                 hierarchy={activeAsset?.type === '3d-model' ? hierarchy : []}
                 selectedNodeId={selectedNodeId}
-                onSelectNode={setSelectedNodeId}
+                selectedNodeIds={selectedNodeIds}
+                selectionCleared={selectionCleared}
+                onSelectNodes={handleSelectNodes}
                 onToggleVisibility={handleToggleNodeVisibility}
+                onShowAll={handleShowAllNodes}
                 onFocusNode={handleFocusNode}
+                onNodeContextMenu={handleHierarchyContextMenu}
+                onRenameNode={handleRenameFromHierarchy}
               />
             ) : leftTab === 'assets' ? (
               <AssetBrowser
@@ -853,8 +916,13 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                 <Viewport3D
                   ref={viewportRef}
                   asset={activeAsset}
+                  projectAssets={project.assets}
+                  contents={resolvedContents}
                   settings={settings}
+                  hierarchy={hierarchy}
                   selectedNodeId={selectedNodeId}
+                  selectedNodeIds={selectedNodeIds}
+                  selectionCleared={selectionCleared}
                   selectedNodeName={selectedNodeName}
                   showBounds={showBounds}
                   showCollision={showCollision}
@@ -866,10 +934,32 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                   onTogglePivot={() => setShowPivot((v) => !v)}
                   onChangeLighting={setLightingPreset}
                   onChangeMaterialMode={setMaterialMode}
-                  onSelectHierarchyNode={setSelectedNodeId}
+                  onSelectNodes={handleSelectNodes}
                   onUpdateSettings={onUpdateSettings}
+                  onUpdateAsset={onUpdateAsset}
+                  onUpdateContents={onUpdateContents}
+                  onRenameAsset={onRenameAsset}
+                  onDuplicateAsset={onDuplicateAsset}
+                  onDeleteAsset={onDeleteAsset}
+                  onReplaceAsset={onReplaceAsset}
+                  onRevealAssetInBrowser={(assetId) => {
+                    onSelectAsset(assetId);
+                    setLeftCollapsed(false);
+                    setLeftTab('assets');
+                    setMobilePane('explorer');
+                  }}
+                  onOpenTextureAsset={(texAssetId) => {
+                    onSelectAsset(texAssetId);
+                    setCenterTab('viewport');
+                    setMobilePane('viewport');
+                  }}
+                  onOpenInspector={() => {
+                    setRightCollapsed(false);
+                    setMobilePane('inspector');
+                  }}
                   onTransformChange={handleViewportTransformChange}
                   onModelInspected={handleModelInspected}
+                  onHierarchyChanged={handleHierarchyChanged}
                   onLog={onLog}
                 />
               )
@@ -890,7 +980,7 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                 onUpdateContents={onUpdateContents}
                 onPreviewAssetIn3D={(assetId) => {
                   onSelectAsset(assetId);
-                  setSelectedNodeId(null);
+                  handleSelectNodes([], null, false);
                   setCenterTab('viewport');
                   setMobilePane('viewport');
                 }}
@@ -917,7 +1007,7 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                 }}
                 onSelectAsset={(assetId) => {
                   onSelectAsset(assetId);
-                  setSelectedNodeId(null);
+                  handleSelectNodes([], null, false);
                   setCenterTab('viewport');
                   setMobilePane('viewport');
                 }}

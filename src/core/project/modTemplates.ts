@@ -1,3 +1,4 @@
+import { CURRENT_MOD_CONTENT_SCHEMA_VERSION } from '@/src/core/api/woaModApiSpec';
 import { serializeWoa3dAsset } from '@/src/core/assets/assetPipeline';
 import {
   createEmptyContentDatabase,
@@ -133,13 +134,14 @@ export function applyTemplateToProject(
       parentPath: 'assets/models',
       type: 'asset-3d',
       assetId: id,
-      content: serializeWoa3dAsset(asset),
+      content: serializeWoa3dAsset({
+        ...asset,
+        schemaVersion: CURRENT_MOD_CONTENT_SCHEMA_VERSION,
+      }),
       updatedAt: now,
     });
     return asset;
   };
-
-  const primaryModel = project.assets[0]?.path ?? 'assets/models/starter.woa3d';
 
   if (templateId === 'weapon-pack') {
     const blade = registerModelAsset(
@@ -236,6 +238,16 @@ export function applyTemplateToProject(
       },
     ];
   } else if (templateId === 'quest-npc') {
+    const npcModelAsset = registerModelAsset(
+      `asset_${Date.now()}_npc_lyra`,
+      'Archivist Lyra Model',
+      'archivist_lyra.woa3d',
+      'beacon-pedestal',
+      'NPC',
+      '#3B4A62',
+      '#F59E0B',
+      1180
+    );
     db.items.push({
       uid: 'tpl_item_seal',
       id: `${modId}:cartographer_seal`,
@@ -254,7 +266,7 @@ export function applyTemplateToProject(
       id: `${modId}:archivist_lyra`,
       name: 'Archivist Lyra',
       description: 'Chronicler seeking lost wayfarer markers across the frontier.',
-      model: primaryModel,
+      model: npcModelAsset.path,
       health: 180,
       movementSpeed: 3.1,
       behaviorType: 'quest_giver',
@@ -475,6 +487,16 @@ export function applyTemplateToProject(
         updatedAt: now,
       },
     ];
+    const chestAsset = registerModelAsset(
+      `asset_${Date.now()}_watchpost_chest`,
+      'Watchpost Supply Chest Model',
+      'watchpost_chest.woa3d',
+      'frontier-crate',
+      'Decoration',
+      '#7C5A3B',
+      '#94A3B8',
+      640
+    );
     db.worldObjects = [
       {
         uid: 'tpl_wobj_chest',
@@ -482,7 +504,7 @@ export function applyTemplateToProject(
         name: 'Watchpost Supply Chest',
         description: 'Interactive chest placed outside frontier watchposts.',
         objectType: 'chest',
-        model: primaryModel,
+        model: chestAsset.path,
         materialConfigId: `${modId}:mat_weathered_granite`,
         audioCueId: '',
         lootTableId: `${modId}:loot_watchpost_chest`,

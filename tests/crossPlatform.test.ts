@@ -31,8 +31,10 @@ import {
   validateSupportedGameVersion,
 } from '../src/core/api/woaModApiSpec';
 import {
+  deriveAssetModCategoryFromContext,
   getAssetFormatSpec,
   isSupportedAssetPath,
+  normalizeAssetModCategory,
   parseAndValidateWoa3dContent,
   serializeWoa3dAsset,
 } from '../src/core/assets/assetPipeline';
@@ -1053,6 +1055,122 @@ test('Entities mod with assets/models/clockwork_sentinel.woa3d (v1 & v2) validat
     reExportZip.file('assets/models/clockwork_sentinel.woa3d'),
     'Expected re-exported .woamod to retain clockwork_sentinel.woa3d'
   );
+});
+
+test('WOA3D category derivation, legacy aliases, invalid category rejection, and content-vs-model cross-validation', async () => {
+  // Preset & category derivation never silently coerces clockwork-sentinel or Entities to Item
+  assert.equal(deriveAssetModCategoryFromContext({ preset: 'clockwork-sentinel' }), 'Monster');
+  assert.equal(deriveAssetModCategoryFromContext({ preset: 'relic-sword' }), 'Weapon');
+  assert.equal(deriveAssetModCategoryFromContext({ preset: 'frontier-crate' }), 'Building');
+  assert.equal(deriveAssetModCategoryFromContext({ preset: 'crystal-obelisk' }), 'Decoration');
+  assert.equal(deriveAssetModCategoryFromContext({ modCategories: ['Biomes'] }), 'Decoration');
+
+  // Legacy category alias mapping for backward compatibility
+  assert.equal(normalizeAssetModCategory('monster'), 'Monster');
+  assert.equal(normalizeAssetModCategory('creature'), 'Monster');
+  assert.equal(normalizeAssetModCategory('entity'), 'Monster');
+  assert.equal(normalizeAssetModCategory('prop'), 'Decoration');
+  assert.equal(normalizeAssetModCategory('npc'), 'NPC');
+  assert.equal(normalizeAssetModCategory('bogus_category'), null);
+
+  // Unknown modCategory inside .woa3d throws wrong_category error
+  assert.throws(
+    () =>
+      parseAndValidateWoa3dContent(
+        JSON.stringify({
+          format: 'WOA3D',
+          preset: 'clockwork-sentinel',
+          modCategory: 'bogus_category',
+        })
+      ),
+    /wrong_category/i
+  );
+
+  // Omitted modCategory derives accurately from preset/contentType
+  const inferredFromPreset = parseAndValidateWoa3dContent(
+    JSON.stringify({ format: 'WOA3D', preset: 'clockwork-sentinel' })
+  );
+  assert.equal(inferredFromPreset.modCategory, 'Monster');
+
+  const inferredFromAlias = parseAndValidateWoa3dContent(
+    JSON.stringify({ format: 'WOA3D', preset: 'beacon-pedestal', modCategory: 'creature' })
+  );
+  assert.equal(inferredFromAlias.modCategory, 'Monster');
+
+  // Entities mod with clockwork_sentinel.woa3d defaults to Monster + schemaVersion 2
+  const entityMod = createModProject({
+    modId: 'com.test.sentinel_match',
+    name: 'Sentinel Match Mod',
+    version: '1.0.0',
+    author: 'Tester',
+    description: 'Verifies Monster content + Monster clockwork_sentinel.woa3d passes validation.',
+    supportedGameVersion: '1.1.25',
+    categories: ['Entities'],
+    templateId: 'biome-creature',
+  });
+  const sentinelModel = entityMod.assets.find((a) => a.preset === 'clockwork-sentinel');
+  assert.ok(sentinelModel);
+  assert.equal(sentinelModel.modCategory, 'Monster');
+  const sentinelNode = entityMod.files.find((f) => f.path === sentinelModel.path);
+  assert.ok(sentinelNode?.content);
+  const parsedSentinel = parseAndValidateWoa3dContent(sentinelNode.content);
+  assert.equal(parsedSentinel.modCategory, 'Monster');
+  assert.equal(parsedSentinel.schemaVersion, 2);
+
+  // Matching Monster -> Monster .woa3d passes cleanly
+  const matchingReport = await validateModProject(entityMod, [entityMod], 'universal');
+  assert.equal(matchingReport.errorCount, 0, JSON.stringify(matchingReport.issues));
+  assert.equal(APP_VERSION, '1.0.0');
+
+  // Mismatched Monster referencing an Item/Weapon .woa3d fails with INVALID_ASSET_CATEGORY
+  const mismatchedMod = createModProject({
+    modId: 'com.test.sentinel_mismatch',
+    name: 'Sentinel Mismatch Mod',
+    version: '1.0.0',
+    author: 'Tester',
+    description: 'Verifies Monster referencing Weapon model fails validation.',
+    supportedGameVersion: '1.1.25',
+    categories: ['Entities'],
+    templateId: 'biome-creature',
+  });
+  const targetModel = mismatchedMod.assets.find((a) => a.preset === 'clockwork-sentinel')!;
+  targetModel.modCategory = 'Weapon';
+  const targetNode = mismatchedMod.files.find((f) => f.path === targetModel.path)!;
+  targetNode.content = serializeWoa3dAsset({ ...targetModel, schemaVersion: 2 });
+
+  const mismatchReport = await validateModProject(mismatchedMod, [mismatchedMod], 'universal');
+  assert.ok(
+    mismatchReport.issues.some(
+      (i) => i.severity === 'error' && i.code === 'INVALID_ASSET_CATEGORY'
+    ),
+    `Expected INVALID_ASSET_CATEGORY for Monster->Weapon model mismatch, got ${JSON.stringify(mismatchReport.issues)}`
+  );
+
+  // All built-in mod templates scaffold and validate cleanly with 0 errors for 1.1.25
+  for (const templateId of [
+    'blank',
+    'weapon-pack',
+    'quest-npc',
+    'building-dungeon',
+    'biome-creature',
+  ] as const) {
+    const tplProject = createModProject({
+      modId: `com.test.tpl_${templateId.replace(/-/g, '_')}`,
+      name: `Template ${templateId}`,
+      version: '0.1.0',
+      author: 'Tester',
+      description: `Validates ${templateId} template for 1.1.25.`,
+      supportedGameVersion: '1.1.25',
+      categories: templateId === 'weapon-pack' ? ['Weapons', 'Items'] : ['Items'],
+      templateId,
+    });
+    const tplReport = await validateModProject(tplProject, [tplProject], 'universal');
+    assert.equal(
+      tplReport.errorCount,
+      0,
+      `Template ${templateId} failed validation: ${JSON.stringify(tplReport.issues)}`
+    );
+  }
 });
 
 

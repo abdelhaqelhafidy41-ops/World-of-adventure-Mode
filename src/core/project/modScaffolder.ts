@@ -15,7 +15,10 @@ import {
   type GameVersionValidationResult,
   type ParsedGameVersion,
 } from '@/src/core/api/woaModApiSpec';
-import { serializeWoa3dAsset } from '@/src/core/assets/assetPipeline';
+import {
+  deriveAssetModCategoryFromContext,
+  serializeWoa3dAsset,
+} from '@/src/core/assets/assetPipeline';
 import {
   createEmptyContentDatabase,
   createSampleContentDatabase,
@@ -247,13 +250,10 @@ export function createModProject(input: CreateModInput): ModProject {
     name: starterSpec.name,
     path: `assets/models/${starterSpec.fileName}`,
     type: '3d-model',
-    modCategory: categories.includes('Weapons')
-      ? 'Weapon'
-      : categories.includes('Entities')
-        ? 'Monster'
-        : categories.includes('Blocks')
-          ? 'Building'
-          : 'Item',
+    modCategory: deriveAssetModCategoryFromContext({
+      preset: starterSpec.preset,
+      modCategories: categories,
+    }),
     preset: starterSpec.preset,
     format: 'WOA3D',
     sizeBytes: 24800,
@@ -405,7 +405,10 @@ ${manifest.description}
       parentPath: 'assets/models',
       type: 'asset-3d',
       assetId: primaryAsset.id,
-      content: serializeWoa3dAsset(primaryAsset),
+      content: serializeWoa3dAsset({
+        ...primaryAsset,
+        schemaVersion: CURRENT_MOD_CONTENT_SCHEMA_VERSION,
+      }),
       updatedAt: now,
     },
     {
@@ -596,7 +599,10 @@ export function createStarterSampleProject(): ModProject {
       parentPath: 'assets/models',
       type: 'asset-3d',
       assetId: secondAsset.id,
-      content: serializeWoa3dAsset(secondAsset),
+      content: serializeWoa3dAsset({
+        ...secondAsset,
+        schemaVersion: CURRENT_MOD_CONTENT_SCHEMA_VERSION,
+      }),
       updatedAt: now,
     },
     {
@@ -606,7 +612,10 @@ export function createStarterSampleProject(): ModProject {
       parentPath: 'assets/models',
       type: 'asset-3d',
       assetId: thirdAsset.id,
-      content: serializeWoa3dAsset(thirdAsset),
+      content: serializeWoa3dAsset({
+        ...thirdAsset,
+        schemaVersion: CURRENT_MOD_CONTENT_SCHEMA_VERSION,
+      }),
       updatedAt: now,
     }
   );

@@ -13,6 +13,10 @@ import { SettingsView } from '@/src/components/SettingsView';
 import { AppView, TopBar } from '@/src/components/TopBar';
 import { WorkspaceView } from '@/src/components/WorkspaceView';
 import {
+  CURRENT_MOD_CONTENT_SCHEMA_VERSION,
+} from '@/src/core/api/woaModApiSpec';
+import {
+  deriveAssetModCategoryFromContext,
   getFileExtension,
   getUniqueAssetPath,
   importLocalAssetFile,
@@ -862,6 +866,11 @@ export default function App() {
     const unique = getUniqueAssetPath('assets/models', `${slug}.woa3d`, existingPaths);
     const assetId = `asset_${Date.now()}`;
 
+    const derivedCategory = deriveAssetModCategoryFromContext({
+      preset,
+      modCategories: activeProject.manifest.categories,
+    });
+
     const newAsset: ModAsset = {
       id: assetId,
       name,
@@ -871,7 +880,7 @@ export default function App() {
       format: 'WOA3D',
       sizeBytes: 16400,
       triangleEstimate: 1120,
-      modCategory: 'Item',
+      modCategory: derivedCategory,
       pivotMode: 'bottom-center',
       collision: { shape: 'box', scale: 1, offsetY: 0 },
       transform: {
@@ -898,7 +907,10 @@ export default function App() {
       parentPath: 'assets/models',
       type: 'asset-3d',
       assetId,
-      content: serializeWoa3dAsset(newAsset),
+      content: serializeWoa3dAsset({
+        ...newAsset,
+        schemaVersion: CURRENT_MOD_CONTENT_SCHEMA_VERSION,
+      }),
       updatedAt: now,
     };
 

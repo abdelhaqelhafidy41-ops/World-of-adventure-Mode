@@ -590,6 +590,7 @@ function buildCharactersJson(modId: string, contents: ModContentDatabase): strin
   return JSON.stringify(
     {
       $schema: 'woa.content.v1',
+      schemaVersion: CURRENT_MOD_CONTENT_SCHEMA_VERSION,
       modId,
       contentType: 'character',
       entries,
@@ -607,6 +608,7 @@ function buildCreaturesJson(modId: string, contents: ModContentDatabase): string
   return JSON.stringify(
     {
       $schema: 'woa.content.v1',
+      schemaVersion: CURRENT_MOD_CONTENT_SCHEMA_VERSION,
       modId,
       contentType: 'creature',
       entries,
@@ -869,9 +871,13 @@ async function runBuildPipeline(
     if (asset.path.toLowerCase().endsWith('.woa3d')) {
       try {
         const parsedWoa3d = parseAndValidateWoa3dContent(rawContent);
+        const resolvedSchemaVersion =
+          parsedWoa3d.schemaVersion ?? CURRENT_MOD_CONTENT_SCHEMA_VERSION;
         rawContent = serializeWoa3dAsset({
-          $schema: parsedWoa3d.$schema,
-          schemaVersion: parsedWoa3d.schemaVersion,
+          $schema:
+            parsedWoa3d.$schema ??
+            (resolvedSchemaVersion === 1 ? 'woa.asset3d.v1' : 'woa.asset3d.v2'),
+          schemaVersion: resolvedSchemaVersion,
           format: 'WOA3D',
           preset: parsedWoa3d.preset,
           modCategory: asset.modCategory ?? parsedWoa3d.modCategory,
@@ -881,7 +887,10 @@ async function runBuildPipeline(
           material: parsedWoa3d.material,
         });
       } catch {
-        rawContent = serializeWoa3dAsset(asset);
+        rawContent = serializeWoa3dAsset({
+          ...asset,
+          schemaVersion: CURRENT_MOD_CONTENT_SCHEMA_VERSION,
+        });
       }
     }
     zipEntries.set(archivePath, rewriteAudioRefsToSounds(rawContent));

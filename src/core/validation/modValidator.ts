@@ -1,11 +1,15 @@
 import {
+  type ParsedWoa3dAsset,
   getAssetFormatSpec,
+  getExpectedAssetCategoriesForContentKind,
+  getExpectedAssetCategoriesForRegistryCategory,
   getExpectedAssetCategoryForPath,
   getFileExtension,
   inspect3DBuffer,
   inspectAudioBlob,
   inspectImageBlob,
   isSupportedAssetPath,
+  normalizeAssetModCategory,
   parseAndValidateWoa3dContent,
 } from '@/src/core/assets/assetPipeline';
 import {
@@ -1040,6 +1044,7 @@ export async function validateModProject(
   // ---------------------------------------------------------------------------
   const assetIdsSeen = new Set<string>();
   const assetByPath = new Map<string, ModAsset>();
+  const parsedWoa3dByPath = new Map<string, ParsedWoa3dAsset>();
   const blobCache = new Map<string, { data: ArrayBuffer; mimeType: string } | null>();
 
   const loadBlob = async (blobKey: string) => {
@@ -1217,23 +1222,57 @@ export async function validateModProject(
           });
         } else {
           try {
-            parseAndValidateWoa3dContent(node.content);
+            const parsedWoa3d = parseAndValidateWoa3dContent(node.content);
+            parsedWoa3dByPath.set(asset.path, parsedWoa3d);
+            if (parsedWoa3d.schemaVersion !== undefined) {
+              detectedSchemaVersion = Math.max(
+                detectedSchemaVersion ?? 0,
+                parsedWoa3d.schemaVersion
+              );
+            }
+            if (asset.modCategory && asset.modCategory !== parsedWoa3d.modCategory) {
+              pushIssue('error', 'INVALID_ASSET_CATEGORY', 'models', {
+                file: asset.path,
+                object: asset.name,
+                property: 'modCategory',
+                problem: t('validator.woa3dCategorySyncProblem', {
+                  path: asset.path,
+                  assetCategory: asset.modCategory,
+                  fileCategory: parsedWoa3d.modCategory,
+                }),
+                suggestion: t('validator.woa3dCategorySyncSuggestion', {
+                  category: parsedWoa3d.modCategory,
+                }),
+                targetType: 'asset',
+                targetRef: asset.id,
+              });
+            }
           } catch (err) {
             const reason = err instanceof Error ? err.message : 'Invalid WOA3D payload';
             const missingPreset = /preset/i.test(reason);
-            pushIssue('error', 'INVALID_3D_MODEL', 'models', {
-              file: asset.path,
-              object: asset.name,
-              property: missingPreset ? 'preset' : 'content',
-              problem: missingPreset
-                ? t('validator.woa3dMissingPresetProblem')
-                : t('validator.woa3dInvalidContentProblem', { reason }),
-              suggestion: missingPreset
-                ? t('validator.woa3dMissingPresetSuggestion')
-                : t('validator.woa3dInvalidContentSuggestion'),
-              targetType: 'file',
-              targetRef: asset.path,
-            });
+            const isCategoryError = /wrong_category|modCategory/i.test(reason);
+            pushIssue(
+              'error',
+              isCategoryError ? 'INVALID_ASSET_CATEGORY' : 'INVALID_3D_MODEL',
+              'models',
+              {
+                file: asset.path,
+                object: asset.name,
+                property: isCategoryError
+                  ? 'modCategory'
+                  : missingPreset
+                    ? 'preset'
+                    : 'content',
+                problem: missingPreset
+                  ? t('validator.woa3dMissingPresetProblem')
+                  : t('validator.woa3dInvalidContentProblem', { reason }),
+                suggestion: missingPreset
+                  ? t('validator.woa3dMissingPresetSuggestion')
+                  : t('validator.woa3dInvalidContentSuggestion'),
+                targetType: 'file',
+                targetRef: asset.path,
+              }
+            );
           }
         }
       } else if (blobRecord) {
@@ -1513,7 +1552,8 @@ export async function validateModProject(
     property: string,
     refValue: string,
     expectedType: '3d-model' | 'texture' | 'audio',
-    targetRef: string
+    targetRef: string,
+    expectedContentKind?: ContentKind | 'world_object'
   ) => {
     const trimmed = refValue.trim();
     if (!trimmed) return; // required check handled by validate*
@@ -1600,6 +1640,35 @@ export async function validateModProject(
         targetType: 'content',
         targetRef,
       });
+      return;
+    }
+
+    if (expectedType === '3d-model' && expectedContentKind) {
+      const parsedWoa3d = parsedWoa3dByPath.get(trimmed);
+      const modelModCategory = parsedWoa3d?.modCategory ?? matchedAsset?.modCategory;
+      if (modelModCategory) {
+        const allowedCategories =
+          getExpectedAssetCategoriesForContentKind(expectedContentKind);
+        if (!allowedCategories.includes(modelModCategory)) {
+          pushIssue('error', 'INVALID_ASSET_CATEGORY', 'models', {
+            file,
+            object: objectLabel,
+            property,
+            problem: t('validator.modelCategoryMismatchProblem', {
+              property,
+              kind: expectedContentKind,
+              ref: trimmed,
+              actualCategory: modelModCategory,
+              expectedCategories: allowedCategories.join(', '),
+            }),
+            suggestion: t('validator.modelCategoryMismatchSuggestion', {
+              expectedCategories: allowedCategories.join(', '),
+            }),
+            targetType: 'content',
+            targetRef,
+          });
+        }
+      }
     }
   };
 
@@ -1678,7 +1747,7 @@ export async function validateModProject(
     pushContentValidation('weapon', weapon, validateWeapon(weapon, manifest.modId, idIndex));
     const label = `${weapon.name || 'Weapon'} (${weapon.id})`;
     const ref = `weapon:${weapon.uid}`;
-    checkAssetRef(CONTENT_FILE_PATHS.weapon, label, 'model', weapon.model, '3d-model', ref);
+    checkAssetRef(CONTENT_FILE_PATHS.weapon, label, 'model', weapon.model, '3d-model', ref, 'weapon');
     checkAssetRef(CONTENT_FILE_PATHS.weapon, label, 'icon', weapon.icon, 'texture', ref);
     checkAssetRef(CONTENT_FILE_PATHS.weapon, label, 'sound', weapon.sound, 'audio', ref);
   });
@@ -1687,7 +1756,7 @@ export async function validateModProject(
     pushContentValidation('armor', armor, validateArmor(armor, manifest.modId, idIndex));
     const label = `${armor.name || 'Armor'} (${armor.id})`;
     const ref = `armor:${armor.uid}`;
-    checkAssetRef(CONTENT_FILE_PATHS.armor, label, 'model', armor.model, '3d-model', ref);
+    checkAssetRef(CONTENT_FILE_PATHS.armor, label, 'model', armor.model, '3d-model', ref, 'armor');
     checkAssetRef(CONTENT_FILE_PATHS.armor, label, 'icon', armor.icon, 'texture', ref);
   });
 
@@ -1695,7 +1764,7 @@ export async function validateModProject(
     pushContentValidation('npc', npc, validateNpc(npc, manifest.modId, idIndex));
     const label = `${npc.name || 'NPC'} (${npc.id})`;
     const ref = `npc:${npc.uid}`;
-    checkAssetRef(CONTENT_FILE_PATHS.npc, label, 'model', npc.model, '3d-model', ref);
+    checkAssetRef(CONTENT_FILE_PATHS.npc, label, 'model', npc.model, '3d-model', ref, 'npc');
     npc.loot.forEach((l, i) =>
       checkNamespacedReference(CONTENT_FILE_PATHS.npc, label, `loot[${i}].itemId`, l.itemId, ref)
     );
@@ -1708,7 +1777,7 @@ export async function validateModProject(
     pushContentValidation('monster', monster, validateMonster(monster, manifest.modId, idIndex));
     const label = `${monster.name || 'Monster'} (${monster.id})`;
     const ref = `monster:${monster.uid}`;
-    checkAssetRef(CONTENT_FILE_PATHS.monster, label, 'model', monster.model, '3d-model', ref);
+    checkAssetRef(CONTENT_FILE_PATHS.monster, label, 'model', monster.model, '3d-model', ref, 'monster');
     monster.loot.forEach((l, i) =>
       checkNamespacedReference(CONTENT_FILE_PATHS.monster, label, `loot[${i}].itemId`, l.itemId, ref)
     );
@@ -1779,7 +1848,7 @@ export async function validateModProject(
     pushContentValidation('building', building, validateBuilding(building, manifest.modId, idIndex));
     const label = `${building.name || 'Building'} (${building.id})`;
     const ref = `building:${building.uid}`;
-    checkAssetRef(CONTENT_FILE_PATHS.building, label, 'model', building.model, '3d-model', ref);
+    checkAssetRef(CONTENT_FILE_PATHS.building, label, 'model', building.model, '3d-model', ref, 'building');
     building.pieces.forEach((piece, i) =>
       checkAssetRef(
         CONTENT_FILE_PATHS.building,
@@ -1787,7 +1856,8 @@ export async function validateModProject(
         `pieces[${i}].model`,
         piece.model,
         '3d-model',
-        ref
+        ref,
+        'building'
       )
     );
     building.doors.forEach((door, i) => {
@@ -1797,7 +1867,8 @@ export async function validateModProject(
         `doors[${i}].model`,
         door.model,
         '3d-model',
-        ref
+        ref,
+        'building'
       );
       if (door.locked && door.keyItemId.trim()) {
         checkNamespacedReference(
@@ -1816,7 +1887,8 @@ export async function validateModProject(
         `windows[${i}].model`,
         win.model,
         '3d-model',
-        ref
+        ref,
+        'building'
       )
     );
     building.materials.forEach((mat, i) =>
@@ -2003,7 +2075,8 @@ export async function validateModProject(
       'model',
       wo.model,
       '3d-model',
-      ref
+      ref,
+      'world_object'
     );
     if (wo.materialConfigId.trim()) {
       checkNamespacedReference(
@@ -2042,6 +2115,67 @@ export async function validateModProject(
       );
     }
   });
+
+  // Validate data/registry.json modelAsset category alignment for standalone or registry-only entries
+  const registryNodeForChecks = files.find((f) => f.path === 'data/registry.json');
+  if (registryNodeForChecks?.content?.trim()) {
+    try {
+      const regJson = JSON.parse(registryNodeForChecks.content) as {
+        entries?: Array<Record<string, unknown>>;
+      };
+      if (Array.isArray(regJson.entries)) {
+        for (const entry of regJson.entries) {
+          if (!entry || typeof entry !== 'object') continue;
+          const modelRef =
+            typeof entry.modelAsset === 'string' ? entry.modelAsset.trim() : '';
+          if (!modelRef || modelRef.startsWith('woa:')) continue;
+          // Entries backed by content data files already validate through their content loops above
+          if (typeof entry.dataFile === 'string' && entry.dataFile.trim()) continue;
+
+          const parsedWoa3d = parsedWoa3dByPath.get(modelRef);
+          const matchedAsset = assetByPath.get(modelRef);
+          const modelModCategory = parsedWoa3d?.modCategory ?? matchedAsset?.modCategory;
+          if (!modelModCategory) continue;
+
+          const entryLabel =
+            (typeof entry.displayName === 'string' && entry.displayName.trim()) ||
+            (typeof entry.id === 'string' && entry.id.trim()) ||
+            modelRef;
+          const rawRegCategory =
+            entry.type === 'asset' ? entry.category : (entry.type ?? entry.category);
+          const expectedCats =
+            entry.type === 'asset'
+              ? (() => {
+                  const norm = normalizeAssetModCategory(entry.category);
+                  return norm ? [norm] : null;
+                })()
+              : getExpectedAssetCategoriesForRegistryCategory(rawRegCategory);
+
+          if (expectedCats && !expectedCats.includes(modelModCategory)) {
+            pushIssue('error', 'INVALID_ASSET_CATEGORY', 'models', {
+              file: 'data/registry.json',
+              object: entryLabel,
+              property: 'modelAsset',
+              problem: t('validator.modelCategoryMismatchProblem', {
+                property: 'modelAsset',
+                kind: String(rawRegCategory ?? 'registry'),
+                ref: modelRef,
+                actualCategory: modelModCategory,
+                expectedCategories: expectedCats.join(', '),
+              }),
+              suggestion: t('validator.modelCategoryMismatchSuggestion', {
+                expectedCategories: expectedCats.join(', '),
+              }),
+              targetType: 'file',
+              targetRef: 'data/registry.json',
+            });
+          }
+        }
+      }
+    } catch {
+      // Malformed registry.json already reported in step 2
+    }
+  }
 
   // Check script registerAsset('...') calls for broken asset references
   for (const file of files) {

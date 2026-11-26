@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import {
+  CURRENT_MOD_CONTENT_SCHEMA_VERSION,
   isSupportedContentSchemaVersion,
   parseSchemaVersionNumber,
   validateSupportedGameVersion,
@@ -20,8 +21,10 @@ import {
   AssetModCategory,
   AssetPresetKind,
   AssetTransform,
+  ContentKind,
   ExtractedMaterialInfo,
   ModAsset,
+  ModCategory,
   ModFileNode,
   ModNodeType,
   ModelDimensions,
@@ -184,6 +187,171 @@ const WOA3D_TRIANGLE_BY_PRESET: Record<AssetPresetKind, number> = {
 const VALID_ASSET_MOD_CATEGORY_SET = new Set<string>(ASSET_MOD_CATEGORIES);
 const VALID_COLLISION_SHAPES = new Set(['none', 'box', 'sphere', 'capsule']);
 
+const ASSET_MOD_CATEGORY_ALIASES: Record<string, AssetModCategory> = {
+  weapon: 'Weapon',
+  weapons: 'Weapon',
+  sword: 'Weapon',
+  blade: 'Weapon',
+  axe: 'Weapon',
+  bow: 'Weapon',
+  staff: 'Weapon',
+  item: 'Item',
+  items: 'Item',
+  armor: 'Item',
+  equipment: 'Item',
+  consumable: 'Item',
+  material: 'Item',
+  quest_item: 'Item',
+  character: 'Character',
+  characters: 'Character',
+  player: 'Character',
+  npc: 'NPC',
+  npcs: 'NPC',
+  quest_giver: 'NPC',
+  merchant: 'NPC',
+  animal: 'Animal',
+  animals: 'Animal',
+  companion: 'Animal',
+  mount: 'Animal',
+  monster: 'Monster',
+  monsters: 'Monster',
+  creature: 'Monster',
+  creatures: 'Monster',
+  entity: 'Monster',
+  entities: 'Monster',
+  boss: 'Monster',
+  enemy: 'Monster',
+  building: 'Building',
+  buildings: 'Building',
+  structure: 'Building',
+  structures: 'Building',
+  block: 'Building',
+  blocks: 'Building',
+  decoration: 'Decoration',
+  decorations: 'Decoration',
+  prop: 'Decoration',
+  props: 'Decoration',
+  world_object: 'Decoration',
+  biome: 'Decoration',
+  biomes: 'Decoration',
+};
+
+const PRESET_TO_ASSET_MOD_CATEGORY: Record<AssetPresetKind, AssetModCategory> = {
+  'relic-sword': 'Weapon',
+  'clockwork-sentinel': 'Monster',
+  'frontier-crate': 'Building',
+  'crystal-obelisk': 'Decoration',
+  'beacon-pedestal': 'Item',
+};
+
+export function normalizeAssetModCategory(raw: unknown): AssetModCategory | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (VALID_ASSET_MOD_CATEGORY_SET.has(trimmed)) {
+    return trimmed as AssetModCategory;
+  }
+  const normalized = trimmed.toLowerCase().replace(/[\s-]+/g, '_');
+  return ASSET_MOD_CATEGORY_ALIASES[normalized] ?? null;
+}
+
+export function deriveAssetModCategoryFromContext(options: {
+  modCategory?: unknown;
+  contentType?: unknown;
+  preset?: AssetPresetKind;
+  modCategories?: ModCategory[];
+  fallback?: AssetModCategory;
+}): AssetModCategory {
+  const explicit = normalizeAssetModCategory(options.modCategory);
+  if (explicit) return explicit;
+
+  const fromContentType = normalizeAssetModCategory(options.contentType);
+  if (fromContentType) return fromContentType;
+
+  if (options.preset && PRESET_TO_ASSET_MOD_CATEGORY[options.preset]) {
+    return PRESET_TO_ASSET_MOD_CATEGORY[options.preset];
+  }
+
+  const modCats = options.modCategories ?? [];
+  if (modCats.includes('Weapons')) return 'Weapon';
+  if (modCats.includes('Entities')) return 'Monster';
+  if (modCats.includes('Blocks')) return 'Building';
+  if (modCats.includes('Biomes')) return 'Decoration';
+  if (modCats.includes('Items')) return 'Item';
+
+  return options.fallback ?? 'Item';
+}
+
+export function getExpectedAssetCategoriesForContentKind(
+  kind: ContentKind | 'world_object'
+): AssetModCategory[] {
+  switch (kind) {
+    case 'weapon':
+      return ['Weapon'];
+    case 'armor':
+      return ['Item', 'Character', 'Weapon'];
+    case 'npc':
+      return ['NPC', 'Character'];
+    case 'monster':
+      return ['Monster', 'Animal'];
+    case 'building':
+      return ['Building', 'Decoration'];
+    case 'world_object':
+      return ['Decoration', 'Building', 'Item'];
+    case 'item':
+      return ['Item', 'Weapon', 'Decoration'];
+    default:
+      return [...ASSET_MOD_CATEGORIES];
+  }
+}
+
+export function getExpectedAssetCategoriesForRegistryCategory(
+  rawCategory: unknown
+): AssetModCategory[] | null {
+  if (typeof rawCategory !== 'string' || !rawCategory.trim()) return null;
+  const key = rawCategory.trim().toLowerCase().replace(/[\s-]+/g, '_');
+  switch (key) {
+    case 'weapon':
+    case 'weapons':
+      return ['Weapon'];
+    case 'armor':
+      return ['Item', 'Character', 'Weapon'];
+    case 'npc':
+    case 'npcs':
+    case 'character':
+    case 'characters':
+      return ['NPC', 'Character'];
+    case 'monster':
+    case 'monsters':
+    case 'creature':
+    case 'creatures':
+    case 'entities':
+    case 'entity':
+      return ['Monster', 'Animal', 'NPC', 'Character'];
+    case 'animal':
+    case 'animals':
+      return ['Animal', 'Monster'];
+    case 'building':
+    case 'buildings':
+    case 'blocks':
+    case 'block':
+      return ['Building', 'Decoration'];
+    case 'world_object':
+    case 'decoration':
+    case 'decorations':
+    case 'biomes':
+    case 'biome':
+      return ['Decoration', 'Building', 'Item'];
+    case 'item':
+    case 'items':
+      return ['Item', 'Weapon', 'Decoration'];
+    default: {
+      const norm = normalizeAssetModCategory(rawCategory);
+      return norm ? [norm] : null;
+    }
+  }
+}
+
 const DEFAULT_WOA3D_TRANSFORM: AssetTransform = {
   position: { x: 0, y: 0, z: 0 },
   rotation: { x: 0, y: 0, z: 0 },
@@ -224,6 +392,7 @@ export interface ParsedWoa3dAsset {
   format: 'WOA3D';
   type: '3d-model';
   category: '3d-model';
+  contentType?: string;
   preset: AssetPresetKind;
   rawPreset: string;
   modCategory: AssetModCategory;
@@ -336,10 +505,28 @@ export function parseAndValidateWoa3dContent(rawText: string): ParsedWoa3dAsset 
     ? (rawPreset as AssetPresetKind)
     : 'beacon-pedestal';
 
-  const modCategory: AssetModCategory =
-    typeof obj.modCategory === 'string' && VALID_ASSET_MOD_CATEGORY_SET.has(obj.modCategory)
-      ? (obj.modCategory as AssetModCategory)
-      : 'Item';
+  let resolvedContentType: string | undefined;
+  if (obj.contentType !== undefined) {
+    if (typeof obj.contentType === 'string' && obj.contentType.trim()) {
+      resolvedContentType = obj.contentType.trim();
+    }
+  }
+
+  let modCategory: AssetModCategory;
+  if (obj.modCategory !== undefined) {
+    const normalizedModCat = normalizeAssetModCategory(obj.modCategory);
+    if (!normalizedModCat) {
+      throw new Error(
+        `Incompatible WOA3D modCategory "${String(obj.modCategory)}" (wrong_category: expected one of ${ASSET_MOD_CATEGORIES.join(', ')}).`
+      );
+    }
+    modCategory = normalizedModCat;
+  } else {
+    modCategory = deriveAssetModCategoryFromContext({
+      contentType: resolvedContentType,
+      preset,
+    });
+  }
 
   const pivotMode: PivotMode =
     obj.pivotMode === 'center' || obj.pivotMode === 'bottom-center'
@@ -428,6 +615,7 @@ export function parseAndValidateWoa3dContent(rawText: string): ParsedWoa3dAsset 
     format: 'WOA3D',
     type: '3d-model',
     category: '3d-model',
+    ...(resolvedContentType ? { contentType: resolvedContentType } : {}),
     preset,
     rawPreset,
     modCategory,
@@ -447,20 +635,24 @@ export function serializeWoa3dAsset(
 ): string {
   const schemaVersion =
     asset.schemaVersion ??
-    (asset.$schema?.toLowerCase().includes('.v2') ? 2 : undefined);
+    (asset.$schema?.toLowerCase().includes('.v1') ? 1 : CURRENT_MOD_CONTENT_SCHEMA_VERSION);
   const schemaId =
     asset.$schema ??
-    (schemaVersion === 2 ? 'woa.asset3d.v2' : 'woa.asset3d.v1');
+    (schemaVersion === 1 ? 'woa.asset3d.v1' : 'woa.asset3d.v2');
+  const resolvedModCategory = deriveAssetModCategoryFromContext({
+    modCategory: asset.modCategory,
+    preset: asset.preset,
+  });
 
   return JSON.stringify(
     {
       $schema: schemaId,
-      ...(schemaVersion !== undefined ? { schemaVersion } : {}),
+      schemaVersion,
       format: asset.format || 'WOA3D',
       type: '3d-model',
       category: '3d-model',
       preset: asset.preset ?? 'beacon-pedestal',
-      modCategory: asset.modCategory ?? 'Item',
+      modCategory: resolvedModCategory,
       pivotMode: asset.pivotMode ?? 'bottom-center',
       collision: asset.collision ?? DEFAULT_WOA3D_COLLISION,
       transform: asset.transform,
@@ -723,9 +915,13 @@ export async function importLocalAssetFile(
   if (spec.ext === 'woa3d') {
     const rawText = new TextDecoder().decode(safeBuffer);
     const parsedWoa3d = parseAndValidateWoa3dContent(rawText);
+    const resolvedSchemaVersion =
+      parsedWoa3d.schemaVersion ?? CURRENT_MOD_CONTENT_SCHEMA_VERSION;
     const serialized = serializeWoa3dAsset({
-      $schema: parsedWoa3d.$schema,
-      schemaVersion: parsedWoa3d.schemaVersion,
+      $schema:
+        parsedWoa3d.$schema ??
+        (resolvedSchemaVersion === 1 ? 'woa.asset3d.v1' : 'woa.asset3d.v2'),
+      schemaVersion: resolvedSchemaVersion,
       format: 'WOA3D',
       preset: parsedWoa3d.preset,
       modCategory: replaceAsset?.modCategory ?? parsedWoa3d.modCategory,

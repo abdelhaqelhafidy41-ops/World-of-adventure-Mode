@@ -1,3 +1,4 @@
+import { CURRENT_MOD_CONTENT_SCHEMA_VERSION } from '@/src/core/api/woaModApiSpec';
 import {
   buildLocalizedExportMap,
   type LocalizedTextMap,
@@ -1470,6 +1471,7 @@ export function serializeContentFile<K extends ContentKind>(
   return JSON.stringify(
     {
       $schema: 'woa.content.v1',
+      schemaVersion: CURRENT_MOD_CONTENT_SCHEMA_VERSION,
       modId,
       contentType: kind,
       entries: entries.map((e) => serializeContentEntryForExport(e)),
@@ -1487,6 +1489,7 @@ export function serializeExtendedConfigFile<T extends WoAContentBase>(
   return JSON.stringify(
     {
       $schema: `woa.${kind}.v1`,
+      schemaVersion: CURRENT_MOD_CONTENT_SCHEMA_VERSION,
       modId,
       contentType: kind,
       entries: entries.map((e) => serializeContentEntryForExport(e)),
@@ -1655,7 +1658,7 @@ export function buildStandardRegistryJson(
 
   return JSON.stringify(
     {
-      schemaVersion: 2,
+      schemaVersion: CURRENT_MOD_CONTENT_SCHEMA_VERSION,
       format: 'woa.registry.v1',
       modApiSchema: 'woa.mod-api.v1',
       modId: manifest.modId,
@@ -2380,7 +2383,7 @@ export function createSampleContentDatabase(
         durability: 380,
         weight: 6.2,
         slot: 'chest',
-        model: 'assets/models/expedition_crate.woa3d',
+        model: 'woa:models/armor/skyguard_cuirass.glb',
         icon: 'woa:textures/icons/skyguard_cuirass.png',
         updatedAt: now,
       },
@@ -2392,7 +2395,7 @@ export function createSampleContentDatabase(
         name: 'Warden Kael',
         description:
           'Veteran Skyreach Cartographer stationed near ancient frontier waystones.',
-        model: 'assets/models/skyreach_waystone.woa3d',
+        model: 'woa:models/npc/warden_kael.glb',
         health: 220,
         movementSpeed: 3.0,
         behaviorType: 'quest_giver',
@@ -2430,7 +2433,7 @@ export function createSampleContentDatabase(
         name: 'Clockwork Sentinel',
         description:
           'Automated brass-and-slate guardian programmed to patrol shattered astral shrines.',
-        model: 'assets/models/skyreach_waystone.woa3d',
+        model: 'woa:models/monsters/clockwork_sentinel.glb',
         health: 340,
         damage: 24,
         speed: 3.6,

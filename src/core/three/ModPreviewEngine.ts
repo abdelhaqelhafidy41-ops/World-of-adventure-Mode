@@ -14,6 +14,7 @@ import {
   AssetTransform,
   ExtractedMaterialInfo,
   LightingPreset,
+  MaterialConfigEntry,
   MaterialPreviewMode,
   ModAsset,
   ModelDimensions,
@@ -298,6 +299,7 @@ export class ModPreviewEngine {
   private animations: THREE.AnimationClip[] = [];
   private activeAction: THREE.AnimationAction | null = null;
   private activeAnimationName: string | null = null;
+  private keyframeSavedBase: AssetTransform | null = null;
 
   // Material Preview Modes (cached reusable overrides -> zero GC leaks)
   private materialMode: MaterialPreviewMode = 'pbr';
@@ -1710,6 +1712,12 @@ export class ModPreviewEngine {
       emissive?: string;
       emissiveIntensity?: number;
       wireframe?: boolean;
+      opacity?: number;
+      transparent?: boolean;
+      alphaTest?: number;
+      doubleSided?: boolean;
+      normalScale?: number;
+      aoMapIntensity?: number;
     }
   ): boolean {
     const target =
@@ -1758,6 +1766,24 @@ export class ModPreviewEngine {
       if (patch.wireframe !== undefined && 'wireframe' in std) {
         std.wireframe = patch.wireframe;
       }
+      if (patch.opacity !== undefined) {
+        std.opacity = THREE.MathUtils.clamp(patch.opacity, 0, 1);
+      }
+      if (patch.transparent !== undefined) {
+        std.transparent = patch.transparent;
+      }
+      if (patch.alphaTest !== undefined) {
+        std.alphaTest = THREE.MathUtils.clamp(patch.alphaTest, 0, 1);
+      }
+      if (patch.doubleSided !== undefined) {
+        std.side = patch.doubleSided ? THREE.DoubleSide : THREE.FrontSide;
+      }
+      if (patch.normalScale !== undefined && std.normalScale) {
+        std.normalScale.set(patch.normalScale, patch.normalScale);
+      }
+      if (patch.aoMapIntensity !== undefined && 'aoMapIntensity' in std) {
+        std.aoMapIntensity = THREE.MathUtils.clamp(patch.aoMapIntensity, 0, 2);
+      }
       std.needsUpdate = true;
       this.unlitMaterials.delete(child);
       updated = true;
@@ -1771,6 +1797,125 @@ export class ModPreviewEngine {
       this.requestRender();
     }
     return updated;
+  }
+
+  public async applyMaterialConfigToPreview(
+    config: MaterialConfigEntry,
+    nodeId: string | null = null,
+    blobs?: { albedo?: Blob; normal?: Blob; ao?: Blob }
+  ): Promise<boolean> {
+    const loadBlobTex = async (
+      blob: Blob,
+      colorSpace: THREE.ColorSpace
+    ): Promise<THREE.Texture> => {
+      const url = URL.createObjectURL(blob);
+      try {
+        const tex = await new Promise<THREE.Texture>((resolve, reject) => {
+          new THREE.TextureLoader().load(
+            url,
+            (loaded) => {
+              loaded.colorSpace = colorSpace;
+              loaded.wrapS = THREE.RepeatWrapping;
+              loaded.wrapT = THREE.RepeatWrapping;
+              loaded.repeat.set(
+                Math.max(0.1, config.uvTiling?.x ?? 1),
+                Math.max(0.1, config.uvTiling?.y ?? 1)
+              );
+              loaded.offset.set(config.uvOffset?.x ?? 0, config.uvOffset?.y ?? 0);
+              loaded.needsUpdate = true;
+              resolve(loaded);
+            },
+            undefined,
+            (err) => reject(err)
+          );
+        });
+        this.ownedCustomTextures.add(tex);
+        return tex;
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    };
+
+    const albedoTex = blobs?.albedo
+      ? await loadBlobTex(blobs.albedo, THREE.SRGBColorSpace)
+      : undefined;
+    const normalTex = blobs?.normal
+      ? await loadBlobTex(blobs.normal, THREE.LinearSRGBColorSpace)
+      : undefined;
+    const aoTex = blobs?.ao
+      ? await loadBlobTex(blobs.ao, THREE.LinearSRGBColorSpace)
+      : undefined;
+
+    if (this.disposed) return false;
+
+    const opacity = config.opacity ?? 1;
+    const alphaMode = config.alphaMode ?? (config.transparent || opacity < 1 ? 'blend' : 'opaque');
+    const isTransparent = alphaMode === 'blend' || Boolean(config.transparent) || opacity < 1;
+    const alphaTest = alphaMode === 'cutoff' ? (config.alphaCutoff ?? 0.5) : 0;
+
+    const target =
+      (nodeId ? this.nodeById.get(nodeId) : null) ?? this.activeModelInner;
+    if (!target) return false;
+
+    target.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return;
+      if (aoTex && child.geometry) {
+        const geo = child.geometry;
+        if (geo.attributes.uv && !geo.attributes.uv2) {
+          geo.setAttribute('uv2', geo.attributes.uv);
+        }
+      }
+      let mat = (this.originalMaterials.get(child) ?? child.material) as
+        | THREE.Material
+        | THREE.Material[];
+      if (Array.isArray(mat)) mat = mat[0];
+      if (!mat) return;
+      if (
+        this.isMaterialShared(child) ||
+        mat === this.primaryMat ||
+        mat === this.accentMat ||
+        mat === this.trimMat
+      ) {
+        const cloned = mat.clone();
+        this.ownedCustomMaterials.add(cloned);
+        this.originalMaterials.set(child, cloned);
+        if (this.materialMode === 'pbr') child.material = cloned;
+        mat = cloned;
+      }
+      const std = mat as THREE.MeshStandardMaterial;
+      if (albedoTex) std.map = albedoTex;
+      if (normalTex) std.normalMap = normalTex;
+      if (aoTex) std.aoMap = aoTex;
+      const syncUv = (tex: THREE.Texture | null | undefined) => {
+        if (!tex) return;
+        tex.wrapS = THREE.RepeatWrapping;
+        tex.wrapT = THREE.RepeatWrapping;
+        tex.repeat.set(
+          Math.max(0.1, config.uvTiling?.x ?? 1),
+          Math.max(0.1, config.uvTiling?.y ?? 1)
+        );
+        tex.offset.set(config.uvOffset?.x ?? 0, config.uvOffset?.y ?? 0);
+        tex.needsUpdate = true;
+      };
+      syncUv(std.map);
+      syncUv(std.normalMap);
+      syncUv(std.aoMap);
+    });
+
+    return this.updateNodeMaterial(nodeId, {
+      name: config.name,
+      color: config.baseColor,
+      roughness: config.roughness,
+      metalness: config.metallic,
+      emissive: config.emissiveColor,
+      emissiveIntensity: config.emissiveIntensity,
+      opacity,
+      transparent: isTransparent,
+      alphaTest,
+      doubleSided: config.doubleSided,
+      normalScale: config.normalScale ?? 1,
+      aoMapIntensity: config.aoIntensity ?? 1,
+    });
   }
 
   public duplicateNodeMaterial(nodeId: string): boolean {
@@ -1990,6 +2135,48 @@ export class ModPreviewEngine {
       this.mixer.setTime(0);
     }
     this.activeAnimationName = null;
+    this.clearKeyframePose();
+    this.requestRender();
+  }
+
+  public previewKeyframePose(pose: {
+    position?: Vec3Tuple;
+    rotationDeg?: Vec3Tuple;
+    scale?: Vec3Tuple;
+  }): void {
+    const target = this.activeGroup;
+    if (!target) return;
+    if (!this.keyframeSavedBase) {
+      this.keyframeSavedBase = readObjectTransform(target);
+    }
+    const base = this.keyframeSavedBase;
+    target.position.set(
+      base.position.x + (pose.position?.x ?? 0),
+      base.position.y + (pose.position?.y ?? 0),
+      base.position.z + (pose.position?.z ?? 0)
+    );
+    target.rotation.set(
+      THREE.MathUtils.degToRad(base.rotation.x + (pose.rotationDeg?.x ?? 0)),
+      THREE.MathUtils.degToRad(base.rotation.y + (pose.rotationDeg?.y ?? 0)),
+      THREE.MathUtils.degToRad(base.rotation.z + (pose.rotationDeg?.z ?? 0))
+    );
+    target.scale.set(
+      Math.max(0.05, base.scale.x * (pose.scale?.x ?? 1)),
+      Math.max(0.05, base.scale.y * (pose.scale?.y ?? 1)),
+      Math.max(0.05, base.scale.z * (pose.scale?.z ?? 1))
+    );
+    this.refreshHelpers();
+    this.requestRender();
+  }
+
+  public clearKeyframePose(): void {
+    if (!this.keyframeSavedBase || !this.activeGroup) {
+      this.keyframeSavedBase = null;
+      return;
+    }
+    writeObjectTransform(this.activeGroup, this.keyframeSavedBase);
+    this.keyframeSavedBase = null;
+    this.refreshHelpers();
     this.requestRender();
   }
 
@@ -2858,6 +3045,7 @@ export class ModPreviewEngine {
 
   private clearActiveModel(): void {
     this.stopAnimation();
+    this.keyframeSavedBase = null;
     this.mixer = null;
     this.animations = [];
     this.activeAnimationName = null;

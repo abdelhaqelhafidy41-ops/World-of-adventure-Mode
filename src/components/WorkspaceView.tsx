@@ -28,6 +28,7 @@ import {
   ContentEditorsWorkbench,
 } from '@/src/components/content/ContentEditorsWorkbench';
 import { SystemsAndGraphsWorkbench } from '@/src/components/editors/SystemsAndGraphsWorkbench';
+import type { SdkSubTab } from '@/src/components/studios/SdkStudioWorkbench';
 import { AssetBrowser } from '@/src/components/panels/AssetBrowser';
 import { AssetMediaPreview } from '@/src/components/panels/AssetMediaPreview';
 import { ConsolePanel } from '@/src/components/panels/ConsolePanel';
@@ -42,6 +43,7 @@ import {
   CONTENT_FILE_PATHS,
   EXTENDED_CONFIG_FILE_PATHS,
   resolveProjectContents,
+  SDK_CONFIG_FILE_PATHS,
   validateAllContents,
 } from '@/src/core/content/contentRegistry';
 import { ModelInspectionResult } from '@/src/core/three/ModPreviewEngine';
@@ -92,7 +94,10 @@ interface WorkspaceViewProps {
     patch: Partial<ModAsset>,
     options?: { recordUndo?: boolean; historyGroupKey?: string }
   ) => void;
-  onUpdateContents: (next: ModContentDatabase) => void;
+  onUpdateContents: (
+    next: ModContentDatabase,
+    options?: { recordUndo?: boolean; historyGroupKey?: string }
+  ) => void;
   onImportAssetFiles: (files: FileList | File[]) => Promise<void>;
   onAddProceduralAsset: (name: string, preset: AssetPresetKind) => void;
   onRenameAsset: (assetId: string, newName: string) => void;
@@ -355,6 +360,12 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
     [resolvedContents, project.manifest.modId, language]
   );
 
+  const [sdkFocus, setSdkFocus] = useState<{
+    subTab: SdkSubTab;
+    uid?: string | null;
+    token: number;
+  } | null>(null);
+
   const handleInspectIssue = useCallback(
     (issue: ValidationIssue) => {
       if (issue.targetType === 'manifest') {
@@ -384,6 +395,21 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
           setMobilePane('content');
           return;
         }
+      }
+      if (issue.targetType === 'sdk' && issue.targetRef) {
+        const [kind, uid] = issue.targetRef.split(':');
+        const subTab: SdkSubTab =
+          kind === 'prefab'
+            ? 'prefabs'
+            : kind === 'ai_behavior'
+              ? 'ai_behavior'
+              : kind === 'logic_graph'
+                ? 'logic_graph'
+                : 'world';
+        setSdkFocus({ subTab, uid: uid ?? null, token: Date.now() });
+        setCenterTab('systems');
+        setMobilePane('systems');
+        return;
       }
       if (issue.targetRef || issue.file) {
         const path = issue.targetRef || issue.file;
@@ -454,6 +480,21 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
       ).find(([, path]) => path === node.path)?.[0];
       if (matchedKind) {
         setContentKind(matchedKind);
+      } else {
+        const matchedSdkKind = Object.entries(SDK_CONFIG_FILE_PATHS).find(
+          ([, path]) => path === node.path
+        )?.[0];
+        if (matchedSdkKind) {
+          const subTab: SdkSubTab =
+            matchedSdkKind === 'prefab'
+              ? 'prefabs'
+              : matchedSdkKind === 'ai_behavior'
+                ? 'ai_behavior'
+                : matchedSdkKind === 'logic_graph'
+                  ? 'logic_graph'
+                  : 'world';
+          setSdkFocus({ subTab, token: Date.now() });
+        }
       }
       setCenterTab('editor');
       setMobilePane('viewport');
@@ -927,6 +968,7 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
               ) : (
                 <Viewport3D
                   ref={viewportRef}
+                  modId={project.manifest.modId}
                   asset={activeAsset}
                   projectAssets={project.assets}
                   contents={resolvedContents}
@@ -1007,6 +1049,7 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                 project={project}
                 allProjects={allProjects}
                 backups={backups}
+                sdkFocus={sdkFocus}
                 onUpdateManifest={onUpdateManifest}
                 onUpdateContents={onUpdateContents}
                 onSaveFile={onSaveFile}

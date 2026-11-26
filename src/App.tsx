@@ -27,6 +27,7 @@ import {
   CONTENT_FILE_PATHS,
   EXTENDED_CONFIG_FILE_PATHS,
   resolveProjectContents,
+  SDK_CONFIG_FILE_PATHS,
   syncContentFilesInProject,
 } from '@/src/core/content/contentRegistry';
 import {
@@ -582,6 +583,47 @@ export default function App() {
         lootTableId: remapId(e.lootTableId),
         questId: remapId(e.questId),
       })),
+      prefabs: (sourceContents.prefabs ?? []).map((p) => ({
+        ...p,
+        id: remapId(p.id),
+        materials: p.materials.map(remapId),
+        animations: p.animations.map(remapId),
+        nodes: p.nodes.map((n) => ({
+          ...n,
+          materialConfigId: n.materialConfigId
+            ? remapId(n.materialConfigId)
+            : undefined,
+          animationId: n.animationId ? remapId(n.animationId) : undefined,
+        })),
+        references: {
+          ...p.references,
+          contentIds: p.references.contentIds.map(remapId),
+        },
+      })),
+      aiBehaviors: (sourceContents.aiBehaviors ?? []).map((b) => ({
+        ...b,
+        id: remapId(b.id),
+        nodes: b.nodes.map((n) => ({
+          ...n,
+          actionParam: n.actionParam ? remapId(n.actionParam) : n.actionParam,
+        })),
+      })),
+      worldMaps: (sourceContents.worldMaps ?? []).map((w) => ({
+        ...w,
+        id: remapId(w.id),
+        objects: w.objects.map((o) => ({ ...o, refId: remapId(o.refId) })),
+      })),
+      proceduralRules: (sourceContents.proceduralRules ?? []).map((r) => ({
+        ...r,
+        id: remapId(r.id),
+        targetWorldMapId: remapId(r.targetWorldMapId),
+        targetRefId: remapId(r.targetRefId),
+      })),
+      visualLogicGraphs: (sourceContents.visualLogicGraphs ?? []).map((g) => ({
+        ...g,
+        id: remapId(g.id),
+        triggerEvent: remapId(g.triggerEvent),
+      })),
     };
 
     const rawCopy: ModProject = {
@@ -754,6 +796,47 @@ export default function App() {
           audioCueId: remapId(e.audioCueId),
           lootTableId: remapId(e.lootTableId),
           questId: remapId(e.questId),
+        })),
+        prefabs: (updatedContents.prefabs ?? []).map((p) => ({
+          ...p,
+          id: remapId(p.id),
+          materials: p.materials.map(remapId),
+          animations: p.animations.map(remapId),
+          nodes: p.nodes.map((n) => ({
+            ...n,
+            materialConfigId: n.materialConfigId
+              ? remapId(n.materialConfigId)
+              : undefined,
+            animationId: n.animationId ? remapId(n.animationId) : undefined,
+          })),
+          references: {
+            ...p.references,
+            contentIds: p.references.contentIds.map(remapId),
+          },
+        })),
+        aiBehaviors: (updatedContents.aiBehaviors ?? []).map((b) => ({
+          ...b,
+          id: remapId(b.id),
+          nodes: b.nodes.map((n) => ({
+            ...n,
+            actionParam: n.actionParam ? remapId(n.actionParam) : n.actionParam,
+          })),
+        })),
+        worldMaps: (updatedContents.worldMaps ?? []).map((w) => ({
+          ...w,
+          id: remapId(w.id),
+          objects: w.objects.map((o) => ({ ...o, refId: remapId(o.refId) })),
+        })),
+        proceduralRules: (updatedContents.proceduralRules ?? []).map((r) => ({
+          ...r,
+          id: remapId(r.id),
+          targetWorldMapId: remapId(r.targetWorldMapId),
+          targetRefId: remapId(r.targetRefId),
+        })),
+        visualLogicGraphs: (updatedContents.visualLogicGraphs ?? []).map((g) => ({
+          ...g,
+          id: remapId(g.id),
+          triggerEvent: remapId(g.triggerEvent),
         })),
       };
     }
@@ -1198,7 +1281,8 @@ export default function App() {
         ];
     const isContentDataFile =
       Object.values(CONTENT_FILE_PATHS).includes(path) ||
-      Object.values(EXTENDED_CONFIG_FILE_PATHS).includes(path);
+      Object.values(EXTENDED_CONFIG_FILE_PATHS).includes(path) ||
+      Object.values(SDK_CONFIG_FILE_PATHS).includes(path);
     const updatedProject: ModProject = {
       ...activeProject,
       manifest: nextManifest,
@@ -1251,10 +1335,13 @@ export default function App() {
     appendLog('success', 'Localization', t('app.logFileSaved', { path }));
   };
 
-  const handleUpdateContents = (nextContents: ModContentDatabase) => {
+  const handleUpdateContents = (
+    nextContents: ModContentDatabase,
+    options?: { recordUndo?: boolean; historyGroupKey?: string }
+  ) => {
     if (!activeProject) return;
     const synced = syncContentFilesInProject(activeProject, nextContents);
-    persistProjectUpdate(synced);
+    persistProjectUpdate(synced, options);
   };
 
   const handleAddFile = (

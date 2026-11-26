@@ -29,6 +29,7 @@ import {
 import {
   AnimationConfigForm,
   AudioConfigForm,
+  type ConfigPatchOptions,
   DialogueTreeConfigForm,
   LootTableConfigForm,
   MaterialConfigForm,
@@ -120,7 +121,7 @@ interface ContentEditorsWorkbenchProps {
   activeKind?: AnyWorkbenchKind;
   focusTarget?: { kind: AnyWorkbenchKind; uid: string; token: number } | null;
   onChangeKind?: (kind: AnyWorkbenchKind) => void;
-  onUpdateContents: (next: ModContentDatabase) => void;
+  onUpdateContents: (next: ModContentDatabase, opts?: ConfigPatchOptions) => void;
   onPreviewAssetIn3D?: (assetId: string) => void;
 }
 
@@ -958,34 +959,55 @@ export const ContentEditorsWorkbench: React.FC<ContentEditorsWorkbenchProps> = (
     });
   };
 
-  const patchAnimation = (uid: string, patch: Partial<AnimationConfigEntry>) => {
+  const patchAnimation = (
+    uid: string,
+    patch: Partial<AnimationConfigEntry>,
+    opts?: ConfigPatchOptions
+  ) => {
     const now = new Date().toISOString();
-    onUpdateContents({
-      ...contents,
-      animations: (contents.animations ?? []).map((e) =>
-        e.uid === uid ? { ...e, ...patch, updatedAt: now } : e
-      ),
-    });
+    onUpdateContents(
+      {
+        ...contents,
+        animations: (contents.animations ?? []).map((e) =>
+          e.uid === uid ? { ...e, ...patch, updatedAt: now } : e
+        ),
+      },
+      opts
+    );
   };
 
-  const patchAudioCue = (uid: string, patch: Partial<AudioConfigEntry>) => {
+  const patchAudioCue = (
+    uid: string,
+    patch: Partial<AudioConfigEntry>,
+    opts?: ConfigPatchOptions
+  ) => {
     const now = new Date().toISOString();
-    onUpdateContents({
-      ...contents,
-      audioCues: (contents.audioCues ?? []).map((e) =>
-        e.uid === uid ? { ...e, ...patch, updatedAt: now } : e
-      ),
-    });
+    onUpdateContents(
+      {
+        ...contents,
+        audioCues: (contents.audioCues ?? []).map((e) =>
+          e.uid === uid ? { ...e, ...patch, updatedAt: now } : e
+        ),
+      },
+      opts
+    );
   };
 
-  const patchMaterial = (uid: string, patch: Partial<MaterialConfigEntry>) => {
+  const patchMaterial = (
+    uid: string,
+    patch: Partial<MaterialConfigEntry>,
+    opts?: ConfigPatchOptions
+  ) => {
     const now = new Date().toISOString();
-    onUpdateContents({
-      ...contents,
-      materials: (contents.materials ?? []).map((e) =>
-        e.uid === uid ? { ...e, ...patch, updatedAt: now } : e
-      ),
-    });
+    onUpdateContents(
+      {
+        ...contents,
+        materials: (contents.materials ?? []).map((e) =>
+          e.uid === uid ? { ...e, ...patch, updatedAt: now } : e
+        ),
+      },
+      opts
+    );
   };
 
   const patchLootTable = (uid: string, patch: Partial<LootTableDefinition>) => {
@@ -998,14 +1020,21 @@ export const ContentEditorsWorkbench: React.FC<ContentEditorsWorkbenchProps> = (
     });
   };
 
-  const patchDialogueTree = (uid: string, patch: Partial<DialogueTreeDefinition>) => {
+  const patchDialogueTree = (
+    uid: string,
+    patch: Partial<DialogueTreeDefinition>,
+    opts?: ConfigPatchOptions
+  ) => {
     const now = new Date().toISOString();
-    onUpdateContents({
-      ...contents,
-      dialogues: (contents.dialogues ?? []).map((e) =>
-        e.uid === uid ? { ...e, ...patch, updatedAt: now } : e
-      ),
-    });
+    onUpdateContents(
+      {
+        ...contents,
+        dialogues: (contents.dialogues ?? []).map((e) =>
+          e.uid === uid ? { ...e, ...patch, updatedAt: now } : e
+        ),
+      },
+      opts
+    );
   };
 
   const patchWorldObject = (uid: string, patch: Partial<WorldObjectDefinition>) => {
@@ -2476,8 +2505,11 @@ export const ContentEditorsWorkbench: React.FC<ContentEditorsWorkbenchProps> = (
                       <AnimationConfigForm
                         anim={activeEntry as AnimationConfigEntry}
                         contents={contents}
+                        assets={assets}
                         issues={activeIssues}
-                        onPatch={(patch) => patchAnimation(activeEntry.uid, patch)}
+                        onPatch={(patch, opts) =>
+                          patchAnimation(activeEntry.uid, patch, opts)
+                        }
                       />
                     )}
 
@@ -2487,7 +2519,9 @@ export const ContentEditorsWorkbench: React.FC<ContentEditorsWorkbenchProps> = (
                         cue={activeEntry as AudioConfigEntry}
                         assets={assets}
                         issues={activeIssues}
-                        onPatch={(patch) => patchAudioCue(activeEntry.uid, patch)}
+                        onPatch={(patch, opts) =>
+                          patchAudioCue(activeEntry.uid, patch, opts)
+                        }
                       />
                     )}
 
@@ -2497,7 +2531,9 @@ export const ContentEditorsWorkbench: React.FC<ContentEditorsWorkbenchProps> = (
                         mat={activeEntry as MaterialConfigEntry}
                         assets={assets}
                         issues={activeIssues}
-                        onPatch={(patch) => patchMaterial(activeEntry.uid, patch)}
+                        onPatch={(patch, opts) =>
+                          patchMaterial(activeEntry.uid, patch, opts)
+                        }
                       />
                     )}
 
@@ -2519,7 +2555,9 @@ export const ContentEditorsWorkbench: React.FC<ContentEditorsWorkbenchProps> = (
                         modId={modId}
                         contents={contents}
                         issues={activeIssues}
-                        onPatch={(patch) => patchDialogueTree(activeEntry.uid, patch)}
+                        onPatch={(patch, opts) =>
+                          patchDialogueTree(activeEntry.uid, patch, opts)
+                        }
                       />
                     )}
 

@@ -24,6 +24,7 @@ import {
 } from '@/src/core/assets/assetPipeline';
 import {
   EXTENDED_CONFIG_FILE_PATHS,
+  SDK_CONFIG_FILE_PATHS,
   buildStandardRegistryJson,
   extractObjectPart,
   resolveProjectContents,
@@ -31,6 +32,7 @@ import {
   serializeContentFile,
   serializeExtendedConfigFile,
   serializeLoadOrderFile,
+  serializeSdkConfigFile,
   syncContentFilesInProject,
 } from '@/src/core/content/contentRegistry';
 import {
@@ -275,8 +277,17 @@ async function collectRequiredWorkspaceAssetPaths(
   (contents.materials ?? []).forEach((m) => {
     addRef(m.albedoTexture);
     addRef(m.normalTexture);
+    addRef(m.aoTexture);
   });
   (contents.worldObjects ?? []).forEach((wo) => addRef(wo.model));
+  (contents.prefabs ?? []).forEach((p) => {
+    p.nodes.forEach((n) => addRef(n.texturePath));
+    p.references.assetPaths.forEach((ap) => addRef(ap));
+  });
+  if (project.manifest.hubMetadata?.iconAssetPath) {
+    addRef(project.manifest.hubMetadata.iconAssetPath);
+  }
+  (project.manifest.hubMetadata?.screenshotAssetPaths ?? []).forEach((sp) => addRef(sp));
 
   // Collect asset references declared in data/registry.json (e.g. scaffolded modelAsset entries)
   const registryNode = project.files.find((f) => f.path === 'data/registry.json');
@@ -696,9 +707,16 @@ function buildRuntimeModJson(
         lootTables: EXTENDED_CONFIG_FILE_PATHS.loot_table,
         dialogues: EXTENDED_CONFIG_FILE_PATHS.dialogue,
         worldObjects: EXTENDED_CONFIG_FILE_PATHS.world_object,
+        prefabs: SDK_CONFIG_FILE_PATHS.prefab,
+        aiBehaviors: SDK_CONFIG_FILE_PATHS.ai_behavior,
+        worldMaps: SDK_CONFIG_FILE_PATHS.world_map,
+        proceduralRules: SDK_CONFIG_FILE_PATHS.procedural_rule,
+        visualLogicGraphs: SDK_CONFIG_FILE_PATHS.logic_graph,
         loadOrder: 'data/load_order.json',
         registry: 'data/registry.json',
       },
+      ...(manifest.hubMetadata ? { hubMetadata: manifest.hubMetadata } : {}),
+      ...(manifest.stripDevDebugOnExport === false ? { devMode: true } : {}),
       localization: localizationFiles,
       stats: {
         assetCount: counts.assets,
@@ -914,6 +932,11 @@ async function runBuildPipeline(
     'data/loot_tables.json',
     'data/dialogues.json',
     'data/world_objects.json',
+    'data/prefabs.json',
+    'data/ai_behaviors.json',
+    'data/worlds.json',
+    'data/procedural.json',
+    'data/logic_graphs.json',
     'data/load_order.json',
     'data/registry.json',
     'compatibility.json',
@@ -1062,6 +1085,36 @@ async function runBuildPipeline(
     EXTENDED_CONFIG_FILE_PATHS.world_object,
     rewriteAudioRefsToSounds(
       serializeExtendedConfigFile('world_object', project.manifest.modId, contents.worldObjects ?? [])
+    )
+  );
+  zipEntries.set(
+    SDK_CONFIG_FILE_PATHS.prefab,
+    rewriteAudioRefsToSounds(
+      serializeSdkConfigFile('prefab', project.manifest.modId, contents.prefabs ?? [])
+    )
+  );
+  zipEntries.set(
+    SDK_CONFIG_FILE_PATHS.ai_behavior,
+    rewriteAudioRefsToSounds(
+      serializeSdkConfigFile('ai_behavior', project.manifest.modId, contents.aiBehaviors ?? [])
+    )
+  );
+  zipEntries.set(
+    SDK_CONFIG_FILE_PATHS.world_map,
+    rewriteAudioRefsToSounds(
+      serializeSdkConfigFile('world_map', project.manifest.modId, contents.worldMaps ?? [])
+    )
+  );
+  zipEntries.set(
+    SDK_CONFIG_FILE_PATHS.procedural_rule,
+    rewriteAudioRefsToSounds(
+      serializeSdkConfigFile('procedural_rule', project.manifest.modId, contents.proceduralRules ?? [])
+    )
+  );
+  zipEntries.set(
+    SDK_CONFIG_FILE_PATHS.logic_graph,
+    rewriteAudioRefsToSounds(
+      serializeSdkConfigFile('logic_graph', project.manifest.modId, contents.visualLogicGraphs ?? [])
     )
   );
   zipEntries.set('data/load_order.json', serializeLoadOrderFile(project.manifest));
@@ -1819,6 +1872,10 @@ export async function importModFromFile(file: File): Promise<ModProject> {
       loadAfter: ['woa.core'],
       loadBefore: [],
     },
+    ...(rawManifest.hubMetadata ? { hubMetadata: rawManifest.hubMetadata } : {}),
+    ...(rawManifest.stripDevDebugOnExport !== undefined
+      ? { stripDevDebugOnExport: rawManifest.stripDevDebugOnExport }
+      : {}),
     changelog: rawManifest.changelog ?? [],
     createdAt: rawManifest.createdAt || new Date().toISOString(),
     updatedAt: rawManifest.updatedAt || new Date().toISOString(),

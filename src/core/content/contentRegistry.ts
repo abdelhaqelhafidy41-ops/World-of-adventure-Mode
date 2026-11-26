@@ -10,6 +10,7 @@ import {
   ArmorDefinition,
   ArmorSlot,
   AudioConfigEntry,
+  BehaviorGraphDefinition,
   BuildingCategory,
   BuildingDefinition,
   ContentKind,
@@ -33,11 +34,16 @@ import {
   MonsterDefinition,
   NpcBehaviorType,
   NpcDefinition,
+  PrefabDefinition,
+  ProceduralRuleDefinition,
   QuestDefinition,
   QuestObjectiveType,
+  SdkConfigKind,
   SpawnDefinition,
+  VisualLogicGraphDefinition,
   WeaponDefinition,
   WoAContentBase,
+  WorldMapDefinition,
   WorldObjectDefinition,
 } from '@/src/types/mod';
 
@@ -60,6 +66,14 @@ export const EXTENDED_CONFIG_FILE_PATHS: Record<ExtendedConfigKind, string> = {
   loot_table: 'data/loot_tables.json',
   dialogue: 'data/dialogues.json',
   world_object: 'data/world_objects.json',
+};
+
+export const SDK_CONFIG_FILE_PATHS: Record<SdkConfigKind, string> = {
+  prefab: 'data/prefabs.json',
+  ai_behavior: 'data/ai_behaviors.json',
+  world_map: 'data/worlds.json',
+  procedural_rule: 'data/procedural.json',
+  logic_graph: 'data/logic_graphs.json',
 };
 
 export const CONTENT_KIND_LABELS: Record<ContentKind, string> = {
@@ -227,6 +241,11 @@ export function createEmptyContentDatabase(): ModContentDatabase {
     lootTables: [],
     dialogues: [],
     worldObjects: [],
+    prefabs: [],
+    aiBehaviors: [],
+    worldMaps: [],
+    proceduralRules: [],
+    visualLogicGraphs: [],
   };
 }
 
@@ -291,6 +310,11 @@ export function collectAllContentIds(db: ModContentDatabase): Map<string, string
   add(db.lootTables ?? []);
   add(db.dialogues ?? []);
   add(db.worldObjects ?? []);
+  add(db.prefabs ?? []);
+  add(db.aiBehaviors ?? []);
+  add(db.worldMaps ?? []);
+  add(db.proceduralRules ?? []);
+  add(db.visualLogicGraphs ?? []);
   return map;
 }
 
@@ -1295,6 +1319,112 @@ export function validateWorldObjectConfig(
   return issues;
 }
 
+export function validatePrefabConfig(
+  prefab: PrefabDefinition,
+  expectedModId: string,
+  idIndex?: Map<string, string[]>
+): ContentValidationIssue[] {
+  const issues = validateBaseFields(prefab, expectedModId, idIndex);
+  if (!prefab.nodes || prefab.nodes.length === 0) {
+    issues.push({
+      field: 'nodes',
+      level: 'error',
+      message: 'Prefab must contain at least one 3D node.',
+    });
+  }
+  return issues;
+}
+
+export function validateBehaviorGraphConfig(
+  graph: BehaviorGraphDefinition,
+  expectedModId: string,
+  idIndex?: Map<string, string[]>
+): ContentValidationIssue[] {
+  const issues = validateBaseFields(graph, expectedModId, idIndex);
+  if (!graph.nodes || graph.nodes.length === 0) {
+    issues.push({
+      field: 'nodes',
+      level: 'error',
+      message: 'Behavior graph must contain at least a Start node.',
+    });
+  }
+  return issues;
+}
+
+export function validateWorldMapConfig(
+  worldMap: WorldMapDefinition,
+  expectedModId: string,
+  idIndex?: Map<string, string[]>
+): ContentValidationIssue[] {
+  const issues = validateBaseFields(worldMap, expectedModId, idIndex);
+  if (
+    !Number.isFinite(worldMap.sizeMeters?.width) ||
+    worldMap.sizeMeters.width <= 0 ||
+    !Number.isFinite(worldMap.sizeMeters?.depth) ||
+    worldMap.sizeMeters.depth <= 0
+  ) {
+    issues.push({
+      field: 'sizeMeters',
+      level: 'error',
+      message: 'World map width and depth must be positive numbers.',
+    });
+  }
+  if (!Number.isFinite(worldMap.gridSize) || worldMap.gridSize <= 0) {
+    issues.push({
+      field: 'gridSize',
+      level: 'error',
+      message: 'Grid snap size must be greater than zero.',
+    });
+  }
+  return issues;
+}
+
+export function validateProceduralRuleConfig(
+  rule: ProceduralRuleDefinition,
+  expectedModId: string,
+  idIndex?: Map<string, string[]>
+): ContentValidationIssue[] {
+  const issues = validateBaseFields(rule, expectedModId, idIndex);
+  if (!Number.isFinite(rule.density) || rule.density < 1 || rule.density > 400) {
+    issues.push({
+      field: 'density',
+      level: 'error',
+      message: 'Procedural object density count must be between 1 and 400.',
+    });
+  }
+  if (!Number.isFinite(rule.minSpacingMeters) || rule.minSpacingMeters < 0) {
+    issues.push({
+      field: 'minSpacingMeters',
+      level: 'error',
+      message: 'Minimum spacing cannot be negative.',
+    });
+  }
+  if (rule.minAltitude > rule.maxAltitude) {
+    issues.push({
+      field: 'altitude',
+      level: 'error',
+      message: 'Minimum altitude cannot exceed maximum altitude.',
+    });
+  }
+  return issues;
+}
+
+export function validateVisualLogicGraphConfig(
+  graph: VisualLogicGraphDefinition,
+  expectedModId: string,
+  idIndex?: Map<string, string[]>
+): ContentValidationIssue[] {
+  const issues = validateBaseFields(graph, expectedModId, idIndex);
+  if (!graph.nodes || graph.nodes.length === 0) {
+    issues.push({
+      field: 'nodes',
+      level: 'error',
+      message: 'Visual logic graph must contain at least one event or action node.',
+    });
+  }
+  return issues;
+}
+
 export interface ContentValidationSummary {
   byUid: Map<string, ContentValidationIssue[]>;
   byKind: Record<ContentKind, { errors: number; warns: number }>;
@@ -1499,6 +1629,24 @@ export function serializeExtendedConfigFile<T extends WoAContentBase>(
   );
 }
 
+export function serializeSdkConfigFile<T extends WoAContentBase>(
+  kind: SdkConfigKind,
+  modId: string,
+  entries: T[]
+): string {
+  return JSON.stringify(
+    {
+      $schema: `woa.${kind}.v1`,
+      schemaVersion: CURRENT_MOD_CONTENT_SCHEMA_VERSION,
+      modId,
+      contentType: kind,
+      entries: entries.map((e) => serializeContentEntryForExport(e)),
+    },
+    null,
+    2
+  );
+}
+
 export function serializeLoadOrderFile(manifest: ModManifest): string {
   return JSON.stringify(
     {
@@ -1525,6 +1673,11 @@ export function buildStandardRegistryJson(
   const lootTables = contents.lootTables ?? [];
   const dialogues = contents.dialogues ?? [];
   const worldObjects = contents.worldObjects ?? [];
+  const prefabs = contents.prefabs ?? [];
+  const aiBehaviors = contents.aiBehaviors ?? [];
+  const worldMaps = contents.worldMaps ?? [];
+  const proceduralRules = contents.proceduralRules ?? [];
+  const visualLogicGraphs = contents.visualLogicGraphs ?? [];
 
   const allEntries = [
     ...contents.items.map((e) => ({
@@ -1638,6 +1791,40 @@ export function buildStandardRegistryJson(
       shaderProfile: e.shaderProfile,
       dataFile: EXTENDED_CONFIG_FILE_PATHS.material,
     })),
+    ...prefabs.map((e) => ({
+      id: e.id,
+      type: 'prefab',
+      displayName: e.name,
+      category: e.category,
+      dataFile: SDK_CONFIG_FILE_PATHS.prefab,
+    })),
+    ...aiBehaviors.map((e) => ({
+      id: e.id,
+      type: 'ai_behavior',
+      displayName: e.name,
+      targetType: e.targetType,
+      dataFile: SDK_CONFIG_FILE_PATHS.ai_behavior,
+    })),
+    ...worldMaps.map((e) => ({
+      id: e.id,
+      type: 'world_map',
+      displayName: e.name,
+      biome: e.defaultBiome,
+      dataFile: SDK_CONFIG_FILE_PATHS.world_map,
+    })),
+    ...proceduralRules.map((e) => ({
+      id: e.id,
+      type: 'procedural_rule',
+      displayName: e.name,
+      biomes: e.biomes,
+      dataFile: SDK_CONFIG_FILE_PATHS.procedural_rule,
+    })),
+    ...visualLogicGraphs.map((e) => ({
+      id: e.id,
+      type: 'logic_graph',
+      displayName: e.name,
+      dataFile: SDK_CONFIG_FILE_PATHS.logic_graph,
+    })),
   ];
 
   const referencedModels = new Set(
@@ -1679,11 +1866,17 @@ export function buildStandardRegistryJson(
         animations: animations.length,
         audioCues: audioCues.length,
         materials: materials.length,
+        prefabs: prefabs.length,
+        aiBehaviors: aiBehaviors.length,
+        worldMaps: worldMaps.length,
+        proceduralRules: proceduralRules.length,
+        visualLogicGraphs: visualLogicGraphs.length,
         assets: assets.length,
       },
       dataFiles: {
         ...CONTENT_FILE_PATHS,
         ...EXTENDED_CONFIG_FILE_PATHS,
+        ...SDK_CONFIG_FILE_PATHS,
         loadOrder: 'data/load_order.json',
       },
       entries: [...allEntries, ...standaloneAssetEntries],
@@ -1880,6 +2073,21 @@ export function resolveProjectContents(project: ModProject): ModContentDatabase 
       worldObjects:
         project.contents.worldObjects ??
         hydrateEntriesFromJson<WorldObjectDefinition>(byPath.get(EXTENDED_CONFIG_FILE_PATHS.world_object), 'wobj'),
+      prefabs:
+        project.contents.prefabs ??
+        hydrateEntriesFromJson<PrefabDefinition>(byPath.get(SDK_CONFIG_FILE_PATHS.prefab), 'prefab'),
+      aiBehaviors:
+        project.contents.aiBehaviors ??
+        hydrateEntriesFromJson<BehaviorGraphDefinition>(byPath.get(SDK_CONFIG_FILE_PATHS.ai_behavior), 'aibeh'),
+      worldMaps:
+        project.contents.worldMaps ??
+        hydrateEntriesFromJson<WorldMapDefinition>(byPath.get(SDK_CONFIG_FILE_PATHS.world_map), 'wmap'),
+      proceduralRules:
+        project.contents.proceduralRules ??
+        hydrateEntriesFromJson<ProceduralRuleDefinition>(byPath.get(SDK_CONFIG_FILE_PATHS.procedural_rule), 'proc'),
+      visualLogicGraphs:
+        project.contents.visualLogicGraphs ??
+        hydrateEntriesFromJson<VisualLogicGraphDefinition>(byPath.get(SDK_CONFIG_FILE_PATHS.logic_graph), 'logic'),
     };
   }
 
@@ -1902,6 +2110,11 @@ export function resolveProjectContents(project: ModProject): ModContentDatabase 
     lootTables: hydrateEntriesFromJson<LootTableDefinition>(byPath.get(EXTENDED_CONFIG_FILE_PATHS.loot_table), 'loot'),
     dialogues: hydrateEntriesFromJson<DialogueTreeDefinition>(byPath.get(EXTENDED_CONFIG_FILE_PATHS.dialogue), 'dlg'),
     worldObjects: hydrateEntriesFromJson<WorldObjectDefinition>(byPath.get(EXTENDED_CONFIG_FILE_PATHS.world_object), 'wobj'),
+    prefabs: hydrateEntriesFromJson<PrefabDefinition>(byPath.get(SDK_CONFIG_FILE_PATHS.prefab), 'prefab'),
+    aiBehaviors: hydrateEntriesFromJson<BehaviorGraphDefinition>(byPath.get(SDK_CONFIG_FILE_PATHS.ai_behavior), 'aibeh'),
+    worldMaps: hydrateEntriesFromJson<WorldMapDefinition>(byPath.get(SDK_CONFIG_FILE_PATHS.world_map), 'wmap'),
+    proceduralRules: hydrateEntriesFromJson<ProceduralRuleDefinition>(byPath.get(SDK_CONFIG_FILE_PATHS.procedural_rule), 'proc'),
+    visualLogicGraphs: hydrateEntriesFromJson<VisualLogicGraphDefinition>(byPath.get(SDK_CONFIG_FILE_PATHS.logic_graph), 'logic'),
   };
 }
 
@@ -1919,6 +2132,11 @@ export function syncContentFilesInProject(
     lootTables: contents.lootTables ?? [],
     dialogues: contents.dialogues ?? [],
     worldObjects: contents.worldObjects ?? [],
+    prefabs: contents.prefabs ?? [],
+    aiBehaviors: contents.aiBehaviors ?? [],
+    worldMaps: contents.worldMaps ?? [],
+    proceduralRules: contents.proceduralRules ?? [],
+    visualLogicGraphs: contents.visualLogicGraphs ?? [],
   };
 
   const filePayloadMap = new Map<string, string>([
@@ -1954,6 +2172,26 @@ export function syncContentFilesInProject(
     [
       EXTENDED_CONFIG_FILE_PATHS.world_object,
       serializeExtendedConfigFile('world_object', modId, normalizedContents.worldObjects ?? []),
+    ],
+    [
+      SDK_CONFIG_FILE_PATHS.prefab,
+      serializeSdkConfigFile('prefab', modId, normalizedContents.prefabs ?? []),
+    ],
+    [
+      SDK_CONFIG_FILE_PATHS.ai_behavior,
+      serializeSdkConfigFile('ai_behavior', modId, normalizedContents.aiBehaviors ?? []),
+    ],
+    [
+      SDK_CONFIG_FILE_PATHS.world_map,
+      serializeSdkConfigFile('world_map', modId, normalizedContents.worldMaps ?? []),
+    ],
+    [
+      SDK_CONFIG_FILE_PATHS.procedural_rule,
+      serializeSdkConfigFile('procedural_rule', modId, normalizedContents.proceduralRules ?? []),
+    ],
+    [
+      SDK_CONFIG_FILE_PATHS.logic_graph,
+      serializeSdkConfigFile('logic_graph', modId, normalizedContents.visualLogicGraphs ?? []),
     ],
     ['data/load_order.json', serializeLoadOrderFile(project.manifest)],
     [
@@ -3103,6 +3341,219 @@ export function createDefaultWorldObject(
     collisionEnabled: true,
     interactionPrompt: 'Inspect',
     respawnSeconds: 0,
+    updatedAt: now,
+  };
+}
+
+export function createDefaultPrefab(
+  modId: string,
+  existingIds: Set<string>,
+  defaultModel = ''
+): PrefabDefinition {
+  const now = new Date().toISOString();
+  return {
+    uid: `prefab_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    id: ensureUniqueId(modId, 'new_prefab', existingIds),
+    name: 'New Prefab',
+    description: 'Reusable hierarchical 3D prefab blueprint.',
+    category: 'custom',
+    tags: ['reusable'],
+    nodes: [
+      {
+        id: 'pf_root',
+        name: 'Root Prop',
+        parentId: null,
+        type: 'Group',
+        modelPath: defaultModel || undefined,
+        transform: {
+          position: { x: 0, y: 0, z: 0 },
+          rotation: { x: 0, y: 0, z: 0 },
+          scale: { x: 1, y: 1, z: 1 },
+        },
+        properties: {
+          color: '#64748B',
+          roughness: 0.5,
+          metalness: 0.25,
+        },
+      },
+    ],
+    materials: [],
+    textures: [],
+    animations: [],
+    references: {
+      assetPaths: defaultModel ? [defaultModel] : [],
+      contentIds: [],
+    },
+    instanceCount: 0,
+    updatedAt: now,
+  };
+}
+
+export function createDefaultBehaviorGraph(
+  modId: string,
+  existingIds: Set<string>
+): BehaviorGraphDefinition {
+  const now = new Date().toISOString();
+  return {
+    uid: `aibeh_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    id: ensureUniqueId(modId, 'new_ai_behavior', existingIds),
+    name: 'Frontier Patrol AI',
+    description: 'Visual behavior graph controlling creature/NPC patrol, aggro, and combat.',
+    targetType: 'creature',
+    tickIntervalSeconds: 0.5,
+    nodes: [
+      {
+        id: 'n_start',
+        kind: 'start',
+        title: 'Start Tick',
+        position: { x: 80, y: 120 },
+      },
+      {
+        id: 'n_cond_sight',
+        kind: 'condition',
+        title: 'Player Within Aggro?',
+        conditionType: 'player_in_range',
+        conditionValue: 16,
+        position: { x: 320, y: 120 },
+      },
+      {
+        id: 'n_act_attack',
+        kind: 'action',
+        title: 'Engage & Attack',
+        actionType: 'attack',
+        position: { x: 600, y: 60 },
+      },
+      {
+        id: 'n_act_patrol',
+        kind: 'action',
+        title: 'Patrol Territory',
+        actionType: 'patrol',
+        position: { x: 600, y: 200 },
+      },
+    ],
+    edges: [
+      { id: 'e_1', fromNodeId: 'n_start', fromPort: 'out', toNodeId: 'n_cond_sight', toPort: 'in' },
+      { id: 'e_2', fromNodeId: 'n_cond_sight', fromPort: 'true', toNodeId: 'n_act_attack', toPort: 'in', label: 'true' },
+      { id: 'e_3', fromNodeId: 'n_cond_sight', fromPort: 'false', toNodeId: 'n_act_patrol', toPort: 'in', label: 'false' },
+    ],
+    updatedAt: now,
+  };
+}
+
+export function createDefaultWorldMap(
+  modId: string,
+  existingIds: Set<string>
+): WorldMapDefinition {
+  const now = new Date().toISOString();
+  return {
+    uid: `wmap_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    id: ensureUniqueId(modId, 'frontier_region', existingIds),
+    name: 'Frontier Sector',
+    description: 'Top-down world map layout and procedural placement canvas.',
+    regionName: 'Frontier Plains',
+    sizeMeters: { width: 512, depth: 512 },
+    gridSize: 16,
+    snapToGrid: true,
+    waterLevelY: 2,
+    defaultBiome: 'frontier_plains',
+    layers: [
+      { id: 'layer_terrain', name: 'Terrain & Water', visible: true, locked: false, color: '#38BDF8' },
+      { id: 'layer_structures', name: 'Structures & Prefabs', visible: true, locked: false, color: '#F59E0B' },
+      { id: 'layer_entities', name: 'NPCs & Spawns', visible: true, locked: false, color: '#10B981' },
+    ],
+    objects: [
+      {
+        id: 'wz_coast',
+        name: 'Southern Cove',
+        kind: 'water_zone',
+        refId: '',
+        layerId: 'layer_terrain',
+        biome: 'coastal',
+        position: { x: 0, y: 0, z: 160 },
+        rotationYDeg: 0,
+        scale: 1,
+        radius: 64,
+      },
+    ],
+    updatedAt: now,
+  };
+}
+
+export function createDefaultProceduralRule(
+  modId: string,
+  existingIds: Set<string>
+): ProceduralRuleDefinition {
+  const now = new Date().toISOString();
+  return {
+    uid: `proc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    id: ensureUniqueId(modId, 'scatter_rule', existingIds),
+    name: 'Highland Scatter Rule',
+    description: 'Deterministic seeded procedural placement filter.',
+    seed: 1337,
+    targetWorldMapId: '',
+    objectKind: 'tree',
+    targetRefId: 'woa:props/frontier_pine',
+    biomes: ['frontier_plains'],
+    biomeWeights: { frontier_plains: 1 },
+    density: 28,
+    minAltitude: 5,
+    maxAltitude: 180,
+    maxSlopeDeg: 35,
+    minSpacingMeters: 24,
+    avoidWater: true,
+    waterMarginMeters: 8,
+    scaleMin: 0.85,
+    scaleMax: 1.25,
+    updatedAt: now,
+  };
+}
+
+export function createDefaultVisualLogicGraph(
+  modId: string,
+  existingIds: Set<string>
+): VisualLogicGraphDefinition {
+  const now = new Date().toISOString();
+  return {
+    uid: `logic_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    id: ensureUniqueId(modId, 'world_event_logic', existingIds),
+    name: 'Beacon Activation Logic',
+    description: 'Event-driven visual game logic graph without arbitrary code execution.',
+    triggerEvent: 'on_interact',
+    enabled: true,
+    variables: {
+      beaconAttuned: false,
+      waveCount: 0,
+    },
+    nodes: [
+      {
+        id: 'lg_evt',
+        kind: 'event',
+        title: 'On Player Interact',
+        opCode: 'on_interact',
+        params: {},
+        position: { x: 80, y: 110 },
+      },
+      {
+        id: 'lg_var',
+        kind: 'condition',
+        title: 'Check Not Attuned',
+        opCode: 'compare_var',
+        params: { varName: 'beaconAttuned', operator: '==', value: false },
+        position: { x: 340, y: 110 },
+      },
+      {
+        id: 'lg_act',
+        kind: 'variable',
+        title: 'Set beaconAttuned = true',
+        opCode: 'set_var',
+        params: { varName: 'beaconAttuned', mode: 'set', value: true },
+        position: { x: 610, y: 110 },
+      },
+    ],
+    edges: [
+      { id: 'le_1', fromNodeId: 'lg_evt', fromPort: 'exec', toNodeId: 'lg_var', toPort: 'exec' },
+      { id: 'le_2', fromNodeId: 'lg_var', fromPort: 'true', toNodeId: 'lg_act', toPort: 'exec' },
+    ],
     updatedAt: now,
   };
 }

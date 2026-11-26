@@ -38,6 +38,9 @@ const CATEGORY_ORDER: (ValidationCategory | 'all')[] = [
   'textures',
   'audio',
   'data',
+  'prefabs',
+  'world',
+  'logic',
   'dependencies',
   'properties',
   'security',
@@ -73,6 +76,12 @@ export const ValidationPanel: React.FC<ValidationPanelProps> = ({
         return t('validation.cat.audio');
       case 'data':
         return t('validation.cat.data');
+      case 'prefabs':
+        return t('validation.cat.prefabs');
+      case 'world':
+        return t('validation.cat.world');
+      case 'logic':
+        return t('validation.cat.logic');
       case 'dependencies':
         return t('validation.cat.dependencies');
       case 'properties':

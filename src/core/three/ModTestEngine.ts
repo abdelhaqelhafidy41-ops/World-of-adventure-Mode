@@ -18,11 +18,14 @@ import {
 } from '@/src/types/mod';
 import {
   SandboxAnimationClip,
+  SandboxDebugState,
   SandboxEntitySummary,
   SandboxInteractionPrompt,
   SandboxPreviewMode,
   SandboxRunState,
   SandboxSnapshot,
+  SandboxTimeOfDay,
+  SandboxWeather,
 } from '@/src/types/sandbox';
 
 export interface SandboxInputState {
@@ -260,6 +263,11 @@ export class ModTestEngine {
   private pointerDownPos = { x: 0, y: 0 };
   private camAnimating = false;
   private currentTheme: 'dark' | 'light' = 'dark';
+  private weather: SandboxWeather = 'clear';
+  private timeOfDay: SandboxTimeOfDay = 'day';
+  private godMode = false;
+  private rainPoints: THREE.Points | null = null;
+  private rainPositions: Float32Array | null = null;
 
   constructor(container: HTMLElement, callbacks: ModTestEngineCallbacks = {}) {
     this.container = container;
@@ -565,10 +573,217 @@ export class ModTestEngine {
 
   public setTheme(theme: 'dark' | 'light'): void {
     this.currentTheme = theme;
-    const bg = theme === 'dark' ? '#0C1320' : '#DCE5F2';
-    this.scene.background = new THREE.Color(bg);
-    this.scene.fog = new THREE.FogExp2(bg, 0.015);
+    this.applyEnvironmentMood();
     if (!this.loopActive) this.requestRender();
+  }
+
+  public setWeather(weather: SandboxWeather): void {
+    this.weather = weather;
+    if (weather === 'clear') {
+      if (this.rainPoints) {
+        this.rainPoints.visible = false;
+      }
+    } else {
+      if (!this.rainPoints) {
+        const count = 420;
+        const positions = new Float32Array(count * 3);
+        for (let i = 0; i < count; i++) {
+          positions[i * 3] = (Math.random() - 0.5) * 24;
+          positions[i * 3 + 1] = Math.random() * 14 + 0.5;
+          positions[i * 3 + 2] = (Math.random() - 0.5) * 24;
+        }
+        this.rainPositions = positions;
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        const mat = new THREE.PointsMaterial({
+          color: weather === 'storm' ? 0xbae6fd : 0x7dd3fc,
+          size: 0.14,
+          transparent: true,
+          opacity: 0.72,
+          depthWrite: false,
+        });
+        this.rainPoints = new THREE.Points(geo, mat);
+        this.scene.add(this.rainPoints);
+      }
+      this.rainPoints.visible = true;
+      (this.rainPoints.material as THREE.PointsMaterial).opacity =
+        weather === 'storm' ? 0.9 : 0.65;
+    }
+    this.applyEnvironmentMood();
+    if (weather !== 'clear' && this.runState === 'playing') {
+      this.ensureActiveLoop();
+    } else if (!this.loopActive) {
+      this.requestRender();
+    }
+  }
+
+  public setTimeOfDay(timeOfDay: SandboxTimeOfDay): void {
+    this.timeOfDay = timeOfDay;
+    this.applyEnvironmentMood();
+    if (!this.loopActive) this.requestRender();
+  }
+
+  public setGodMode(enabled: boolean): void {
+    this.godMode = enabled;
+    if (enabled && this.playerHp < this.playerMaxHp) {
+      this.playerHp = this.playerMaxHp;
+      this.emitEntitiesSummary();
+    }
+  }
+
+  public healPlayer(): void {
+    this.playerHp = this.playerMaxHp;
+    this.emitEntitiesSummary();
+  }
+
+  public teleportPlayer(x: number, y: number, z: number): void {
+    this.playerPos.set(
+      THREE.MathUtils.clamp(x, -11.4, 11.4),
+      Math.max(0, y),
+      THREE.MathUtils.clamp(z, -11.4, 11.4)
+    );
+    this.playerVelY = 0;
+    this.playerGrounded = this.playerPos.y <= 0.01;
+    this.playerRig.root.position.copy(this.playerPos);
+    if (this.followPlayerCamera) {
+      this.orbit.target.set(this.playerPos.x, 1.0 + this.playerPos.y, this.playerPos.z);
+      this.camera.position.set(this.playerPos.x, this.playerPos.y + 4.8, this.playerPos.z + 8.6);
+      this.orbit.update();
+    }
+    this.emitEntitiesSummary();
+    if (!this.loopActive) this.requestRender();
+  }
+
+  public async spawnEntityById(entityId: string, count = 1): Promise<string | null> {
+    if (!this.snapshot) return null;
+    const seq = this.loadSeq;
+    const lower = entityId.trim().toLowerCase();
+    const safeCount = Math.max(1, Math.min(5, Math.floor(count)));
+
+    const mob =
+      this.snapshot.monsters.find(
+        (m) => m.id.toLowerCase() === lower || m.uid.toLowerCase() === lower || m.name.toLowerCase().includes(lower)
+      ) ?? null;
+    if (mob) {
+      for (let i = 0; i < safeCount; i++) {
+        const angle = (i / Math.max(1, safeCount)) * Math.PI * 2;
+        const pos = new THREE.Vector3(
+          THREE.MathUtils.clamp(this.playerPos.x + Math.cos(angle) * 3.0, -10.5, 10.5),
+          0,
+          THREE.MathUtils.clamp(this.playerPos.z + Math.sin(angle) * 3.0, -10.5, 10.5)
+        );
+        await this.spawnMonsterActor({ ...mob, uid: `${mob.uid}_dbg_${Date.now()}_${i}` }, pos, seq);
+      }
+      this.setShowCollision(this.showCollision);
+      this.emitEntitiesSummary();
+      if (!this.loopActive) this.requestRender();
+      return mob.name;
+    }
+
+    const npc =
+      this.snapshot.npcs.find(
+        (n) => n.id.toLowerCase() === lower || n.uid.toLowerCase() === lower || n.name.toLowerCase().includes(lower)
+      ) ?? null;
+    if (npc) {
+      const pos = new THREE.Vector3(
+        THREE.MathUtils.clamp(this.playerPos.x + 2.5, -10.5, 10.5),
+        0,
+        THREE.MathUtils.clamp(this.playerPos.z - 2.0, -10.5, 10.5)
+      );
+      await this.spawnNpcActor({ ...npc, uid: `${npc.uid}_dbg_${Date.now()}` }, pos, seq);
+      this.setShowCollision(this.showCollision);
+      this.emitEntitiesSummary();
+      if (!this.loopActive) this.requestRender();
+      return npc.name;
+    }
+
+    const item =
+      this.snapshot.items.find(
+        (it) => it.id.toLowerCase() === lower || it.uid.toLowerCase() === lower || it.name.toLowerCase().includes(lower)
+      ) ?? null;
+    if (item) {
+      const pos = new THREE.Vector3(
+        THREE.MathUtils.clamp(this.playerPos.x + 1.8, -10.5, 10.5),
+        0,
+        THREE.MathUtils.clamp(this.playerPos.z + 0.8, -10.5, 10.5)
+      );
+      this.spawnItemActor({ ...item, uid: `${item.uid}_dbg_${Date.now()}` }, pos);
+      this.setShowCollision(this.showCollision);
+      this.emitEntitiesSummary();
+      if (!this.loopActive) this.requestRender();
+      return item.name;
+    }
+
+    return null;
+  }
+
+  public getDebugState(): SandboxDebugState {
+    return {
+      weather: this.weather,
+      timeOfDay: this.timeOfDay,
+      godMode: this.godMode,
+      playerCoords: {
+        x: Number(this.playerPos.x.toFixed(1)),
+        y: Number(this.playerPos.y.toFixed(1)),
+        z: Number(this.playerPos.z.toFixed(1)),
+      },
+    };
+  }
+
+  private applyEnvironmentMood(): void {
+    let bg = this.currentTheme === 'dark' ? '#0C1320' : '#DCE5F2';
+    let hemiSky = 0xdbeafe;
+    let hemiGround = 0x1e293b;
+    let hemiInt = 0.78;
+    let keyColor = 0xfff4e0;
+    let keyInt = 2.25;
+    let keyPos: [number, number, number] = [7, 12, 6];
+
+    if (this.timeOfDay === 'dawn') {
+      bg = '#291D33';
+      hemiSky = 0xfda4af;
+      hemiGround = 0x1e1b4b;
+      hemiInt = 0.7;
+      keyColor = 0xfdba74;
+      keyInt = 1.8;
+      keyPos = [11, 5, 4];
+    } else if (this.timeOfDay === 'dusk') {
+      bg = '#23192D';
+      hemiSky = 0xf97316;
+      hemiGround = 0x0f172a;
+      hemiInt = 0.62;
+      keyColor = 0xfb923c;
+      keyInt = 1.65;
+      keyPos = [-11, 4.5, -3];
+    } else if (this.timeOfDay === 'night') {
+      bg = '#050814';
+      hemiSky = 0x3b82f6;
+      hemiGround = 0x020617;
+      hemiInt = 0.42;
+      keyColor = 0x93c5fd;
+      keyInt = 1.05;
+      keyPos = [-5, 11, 6];
+    }
+
+    if (this.weather === 'rain') {
+      keyInt *= 0.72;
+      bg = this.timeOfDay === 'night' ? '#040712' : '#1E293B';
+    } else if (this.weather === 'storm') {
+      keyInt *= 0.5;
+      hemiInt *= 0.7;
+      bg = '#0F172A';
+    }
+
+    const fogDensity =
+      this.weather === 'storm' ? 0.036 : this.weather === 'rain' ? 0.025 : 0.015;
+    this.scene.background = new THREE.Color(bg);
+    this.scene.fog = new THREE.FogExp2(bg, fogDensity);
+    this.hemiLight.color.setHex(hemiSky);
+    this.hemiLight.groundColor.setHex(hemiGround);
+    this.hemiLight.intensity = hemiInt;
+    this.keyLight.color.setHex(keyColor);
+    this.keyLight.intensity = keyInt;
+    this.keyLight.position.set(...keyPos);
   }
 
   public setLowPowerMode(enabled: boolean): void {
@@ -2295,7 +2510,7 @@ export class ModTestEngine {
 
         if (actor.attackCooldown > 0) {
           actor.attackCooldown = Math.max(0, actor.attackCooldown - dt);
-        } else if (distToPlayer <= 1.55 && actor.monsterData.damage > 0) {
+        } else if (distToPlayer <= 1.55 && actor.monsterData.damage > 0 && !this.godMode) {
           actor.attackCooldown = 1.6;
           this.playerHp = Math.max(0, this.playerHp - actor.monsterData.damage);
           this.callbacks.onTriggerSound?.('woa:sfx_impact');
@@ -2311,6 +2526,21 @@ export class ModTestEngine {
           this.emitEntitiesSummary();
         }
       }
+    }
+
+    if (this.rainPoints && this.rainPoints.visible && this.rainPositions) {
+      const fallSpeed = this.weather === 'storm' ? 18 : 11;
+      const windX = this.weather === 'storm' ? 3.5 : 0.6;
+      const posAttr = this.rainPoints.geometry.getAttribute('position') as THREE.BufferAttribute;
+      for (let i = 0; i < this.rainPositions.length; i += 3) {
+        this.rainPositions[i] += windX * dt;
+        this.rainPositions[i + 1] -= fallSpeed * dt;
+        if (this.rainPositions[i + 1] < 0) {
+          this.rainPositions[i] = this.playerPos.x + ((i * 37) % 24) - 12;
+          this.rainPositions[i + 1] = 14;
+        }
+      }
+      posAttr.needsUpdate = true;
     }
 
     // 4. Step active projectiles
@@ -2495,6 +2725,10 @@ export class ModTestEngine {
     (this.arenaFloor.material as THREE.MeshStandardMaterial).map?.dispose();
     (this.arenaFloor.material as THREE.MeshStandardMaterial).dispose();
     this.gridHelper.dispose();
+    if (this.rainPoints) {
+      this.rainPoints.geometry.dispose();
+      (this.rainPoints.material as THREE.Material).dispose();
+    }
     this.envRT?.dispose();
     this.orbit.dispose();
     this.renderer.dispose();

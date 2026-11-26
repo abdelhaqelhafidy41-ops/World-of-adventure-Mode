@@ -1153,6 +1153,12 @@ test('WOA3D category derivation, legacy aliases, invalid category rejection, and
     'quest-npc',
     'building-dungeon',
     'biome-creature',
+    'character-mod',
+    'npc-mod',
+    'quest-mod',
+    'item-mod',
+    'audio-mod',
+    'complete-mod',
   ] as const) {
     const tplProject = createModProject({
       modId: `com.test.tpl_${templateId.replace(/-/g, '_')}`,
@@ -1172,6 +1178,7 @@ test('WOA3D category derivation, legacy aliases, invalid category rejection, and
     );
   }
 });
+
 
 
 

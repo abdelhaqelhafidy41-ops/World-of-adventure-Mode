@@ -63,12 +63,28 @@ export interface ProjectileSettings {
   pierceCount: number;
 }
 
+export type WeaponSubtype =
+  | 'melee'
+  | 'sword'
+  | 'axe'
+  | 'spear'
+  | 'dagger'
+  | 'bow'
+  | 'staff'
+  | 'shield';
+
 export interface LootDropEntry {
   id: string;
   itemId: string;
   minCount: number;
   maxCount: number;
   chance: number; // percentage 0..100
+  weight?: number;
+  guaranteed?: boolean;
+  rarityFilter?: ItemRarity;
+  conditionBiome?: string;
+  minPlayerLevel?: number;
+  conditionWeather?: WeatherCondition;
 }
 
 export interface NpcDialogueLine {
@@ -109,6 +125,12 @@ export interface ItemDefinition extends WoAContentBase {
   category: ItemCategory;
 }
 
+export interface WeaponChargeAttackConfig {
+  enabled: boolean;
+  multiplier: number;
+  chargeSeconds: number;
+}
+
 export interface WeaponDefinition extends WoAContentBase {
   damage: number;
   attackSpeed: number;
@@ -120,6 +142,14 @@ export interface WeaponDefinition extends WoAContentBase {
   sound: string;
   model: string;
   icon: string;
+  weaponType?: WeaponSubtype;
+  cooldownSeconds?: number;
+  staminaCost?: number;
+  knockback?: number;
+  critMultiplier?: number;
+  reloadSeconds?: number;
+  ammoItemId?: string;
+  chargeAttack?: WeaponChargeAttackConfig;
 }
 
 export interface ArmorDefinition extends WoAContentBase {
@@ -140,6 +170,17 @@ export interface NpcDefinition extends WoAContentBase {
   faction: string;
   loot: LootDropEntry[];
   questReferences: string[];
+  aiBehaviorGraphId?: string;
+  dialogueTreeId?: string;
+}
+
+export interface MonsterSpecialAbility {
+  id: string;
+  name: string;
+  cooldownSeconds: number;
+  range: number;
+  damageMultiplier: number;
+  effect?: 'bleed' | 'burn' | 'frost' | 'stun' | 'knockback';
 }
 
 export interface MonsterDefinition extends WoAContentBase {
@@ -151,6 +192,12 @@ export interface MonsterDefinition extends WoAContentBase {
   attackBehavior: MonsterAttackBehavior;
   loot: LootDropEntry[];
   spawnRules: MonsterSpawnRules;
+  aiBehaviorGraphId?: string;
+  patrolRadius?: number;
+  aggroRadius?: number;
+  fleeHealthPercent?: number;
+  lootTableId?: string;
+  abilities?: MonsterSpecialAbility[];
 }
 
 // ============================================================================
@@ -168,6 +215,8 @@ export interface QuestObjective {
   targetId: string; // creature ID, item ID, NPC ID, or location ID
   requiredCount: number;
   consumeOnComplete?: boolean;
+  optional?: boolean;
+  failCondition?: string;
   location?: {
     x: number;
     y: number;
@@ -190,6 +239,15 @@ export interface QuestDialogueStage {
   textTranslations?: LocalizedTextMap;
 }
 
+export interface QuestEndingBranch {
+  id: string;
+  label: string;
+  labelTranslations?: LocalizedTextMap;
+  rewardXpBonus?: number;
+  rewardGoldBonus?: number;
+  unlocksQuestId?: string;
+}
+
 export interface QuestDefinition extends WoAContentBase {
   questType: QuestType;
   chapterOrRegion: string;
@@ -209,6 +267,9 @@ export interface QuestDefinition extends WoAContentBase {
     prerequisiteQuestIds: string[];
     nextQuestId: string;
   };
+  failConditions?: string[];
+  endings?: QuestEndingBranch[];
+  graphPosition?: { x: number; y: number };
 }
 
 export type CraftingStationType =
@@ -314,6 +375,7 @@ export interface BuildingDefinition extends WoAContentBase {
   doors: BuildingDoorEntry[];
   windows: BuildingWindowEntry[];
   interactiveObjects: BuildingInteractiveObject[];
+  linkedPrefabId?: string;
 }
 
 export type WeatherCondition = 'any' | 'clear' | 'rain' | 'storm';
@@ -363,7 +425,39 @@ export type ExtendedConfigKind =
   | 'dialogue'
   | 'world_object';
 
+export type SdkConfigKind =
+  | 'prefab'
+  | 'ai_behavior'
+  | 'world_map'
+  | 'procedural_rule'
+  | 'logic_graph';
+
 export type AnimationTargetType = 'weapon' | 'character' | 'npc' | 'creature' | 'prop';
+
+export type AnimationStatePreset =
+  | 'idle'
+  | 'walk'
+  | 'run'
+  | 'attack'
+  | 'interact'
+  | 'sit'
+  | 'sleep';
+
+export interface AnimationKeyframe {
+  id: string;
+  timeNormalized: number; // 0..1
+  targetNodeName?: string;
+  position: { x: number; y: number; z: number };
+  rotationDeg: { x: number; y: number; z: number };
+  scale: { x: number; y: number; z: number };
+}
+
+export interface AnimationTimelineEvent {
+  id: string;
+  timeNormalized: number; // 0..1
+  eventType: 'hit' | 'sound' | 'particle' | 'footstep' | 'custom';
+  payload: string;
+}
 
 export interface AnimationConfigEntry extends WoAContentBase {
   targetType: AnimationTargetType;
@@ -373,9 +467,20 @@ export interface AnimationConfigEntry extends WoAContentBase {
   loop: boolean;
   hitFrameNormalized: number; // 0..1 trigger point for melee/cast events
   soundCueId: string;
+  durationSeconds?: number;
+  statePreset?: AnimationStatePreset;
+  keyframes?: AnimationKeyframe[];
+  events?: AnimationTimelineEvent[];
 }
 
 export type AudioBusType = 'sfx' | 'ambience' | 'music' | 'ui';
+export type AudioTriggerType =
+  | 'manual'
+  | 'attack'
+  | 'hit'
+  | 'interact'
+  | 'ambient'
+  | 'quest';
 
 export interface AudioConfigEntry extends WoAContentBase {
   bus: AudioBusType;
@@ -386,6 +491,10 @@ export interface AudioConfigEntry extends WoAContentBase {
   spatial: boolean;
   maxDistanceMeters: number;
   loop: boolean;
+  fadeInSeconds?: number;
+  fadeOutSeconds?: number;
+  minDistanceMeters?: number;
+  trigger?: AudioTriggerType;
 }
 
 export type MaterialShaderProfile =
@@ -395,16 +504,26 @@ export type MaterialShaderProfile =
   | 'water_surface'
   | 'stone_weathered';
 
+export type MaterialAlphaMode = 'opaque' | 'blend' | 'cutoff';
+
 export interface MaterialConfigEntry extends WoAContentBase {
   shaderProfile: MaterialShaderProfile;
   albedoTexture: string;
   normalTexture: string;
+  aoTexture?: string;
+  aoIntensity?: number; // 0..2
+  normalScale?: number; // 0..2
   baseColor: string;
   metallic: number; // 0..1
   roughness: number; // 0..1
   emissiveColor: string;
   emissiveIntensity: number; // 0..3
+  opacity?: number; // 0..1
+  transparent?: boolean;
+  alphaMode?: MaterialAlphaMode;
+  alphaCutoff?: number; // 0..1
   uvTiling: { x: number; y: number };
+  uvOffset?: { x: number; y: number };
   doubleSided: boolean;
 }
 
@@ -421,6 +540,8 @@ export interface DialogueChoice {
   labelTranslations?: LocalizedTextMap;
   nextNodeId: string;
   condition?: string;
+  requiredItemId?: string;
+  reputationMin?: number;
 }
 
 export interface DialogueTreeNode {
@@ -433,6 +554,7 @@ export interface DialogueTreeNode {
   condition?: string;
   questTriggerId?: string;
   choices: DialogueChoice[];
+  position?: { x: number; y: number };
 }
 
 export interface DialogueTreeDefinition extends WoAContentBase {
@@ -467,6 +589,208 @@ export interface WorldObjectDefinition extends WoAContentBase {
   respawnSeconds: number;
 }
 
+// ============================================================================
+// MOD SDK SYSTEMS: PREFABS, AI BEHAVIOR GRAPHS, WORLDS, PROCEDURAL, LOGIC
+// ============================================================================
+
+export type PrefabCategory =
+  | 'house'
+  | 'tree'
+  | 'cart'
+  | 'gate'
+  | 'camp'
+  | 'npc_setup'
+  | 'decoration'
+  | 'weapon_display'
+  | 'furniture'
+  | 'custom';
+
+export interface PrefabNodeItem {
+  id: string;
+  name: string;
+  parentId: string | null;
+  type: 'Group' | 'Mesh' | 'Object3D' | 'PrefabRef';
+  modelPath?: string;
+  materialConfigId?: string;
+  texturePath?: string;
+  animationId?: string;
+  transform: {
+    position: { x: number; y: number; z: number };
+    rotation: { x: number; y: number; z: number };
+    scale: { x: number; y: number; z: number };
+  };
+  properties?: Record<string, string | number | boolean>;
+}
+
+export interface PrefabDefinition extends WoAContentBase {
+  category: PrefabCategory;
+  sourceAssetId?: string;
+  sourceBuildingId?: string;
+  tags: string[];
+  nodes: PrefabNodeItem[];
+  materials: string[];
+  textures: string[];
+  animations: string[];
+  references: {
+    assetPaths: string[];
+    contentIds: string[];
+  };
+  instanceCount?: number;
+}
+
+export type BehaviorNodeKind =
+  | 'start'
+  | 'condition'
+  | 'sequence'
+  | 'selector'
+  | 'action';
+
+export type BehaviorConditionType =
+  | 'player_in_range'
+  | 'health_below'
+  | 'time_of_day'
+  | 'has_target'
+  | 'random_chance';
+
+export type BehaviorActionType =
+  | 'idle'
+  | 'patrol'
+  | 'chase'
+  | 'attack'
+  | 'flee'
+  | 'speak'
+  | 'cast_ability'
+  | 'call_allies'
+  | 'return_home';
+
+export interface BehaviorGraphNode {
+  id: string;
+  kind: BehaviorNodeKind;
+  title: string;
+  position: { x: number; y: number };
+  conditionType?: BehaviorConditionType;
+  conditionValue?: string | number;
+  actionType?: BehaviorActionType;
+  actionParam?: string;
+  cooldownSeconds?: number;
+}
+
+export interface BehaviorGraphEdge {
+  id: string;
+  fromNodeId: string;
+  toNodeId: string;
+  fromPort: 'out' | 'true' | 'false';
+  toPort: 'in';
+  label?: string;
+}
+
+export interface BehaviorGraphDefinition extends WoAContentBase {
+  targetType: 'npc' | 'creature' | 'companion' | 'boss';
+  tickIntervalSeconds: number;
+  nodes: BehaviorGraphNode[];
+  edges: BehaviorGraphEdge[];
+}
+
+export type WorldPlacedEntityKind =
+  | 'tree'
+  | 'rock'
+  | 'building'
+  | 'prefab'
+  | 'npc'
+  | 'spawn'
+  | 'village'
+  | 'cave'
+  | 'ruin'
+  | 'bandit_camp'
+  | 'resource'
+  | 'water_zone';
+
+export interface WorldMapLayer {
+  id: string;
+  name: string;
+  visible: boolean;
+  locked: boolean;
+  color: string;
+}
+
+export interface WorldPlacedObject {
+  id: string;
+  name: string;
+  kind: WorldPlacedEntityKind;
+  refId: string; // prefab id, building id, npc id, spawn id, or world_object id
+  layerId: string;
+  biome: string;
+  position: { x: number; y: number; z: number };
+  rotationYDeg: number;
+  scale: number;
+  radius: number;
+  locked?: boolean;
+  hidden?: boolean;
+  generatedByRuleId?: string;
+}
+
+export interface WorldMapDefinition extends WoAContentBase {
+  regionName: string;
+  sizeMeters: { width: number; depth: number };
+  gridSize: number;
+  snapToGrid: boolean;
+  waterLevelY: number;
+  defaultBiome: string;
+  layers: WorldMapLayer[];
+  objects: WorldPlacedObject[];
+}
+
+export interface ProceduralRuleDefinition extends WoAContentBase {
+  seed: number;
+  targetWorldMapId: string;
+  objectKind: Exclude<WorldPlacedEntityKind, 'water_zone'>;
+  targetRefId: string; // prefabId, worldObjectId, buildingId, or spawnId
+  biomes: string[];
+  biomeWeights: Record<string, number>;
+  density: number; // count per region run
+  minAltitude: number;
+  maxAltitude: number;
+  maxSlopeDeg: number;
+  minSpacingMeters: number;
+  avoidWater: boolean;
+  waterMarginMeters: number;
+  scaleMin: number;
+  scaleMax: number;
+}
+
+export type VisualLogicNodeKind =
+  | 'event'
+  | 'condition'
+  | 'action'
+  | 'variable'
+  | 'timer'
+  | 'counter';
+
+export interface VisualLogicNode {
+  id: string;
+  kind: VisualLogicNodeKind;
+  title: string;
+  position: { x: number; y: number };
+  opCode: string; // e.g., 'on_enter_zone', 'compare_var', 'spawn_entity', 'give_item', 'play_sound', 'trigger_quest', 'set_var'
+  params: Record<string, string | number | boolean>;
+}
+
+export interface VisualLogicEdge {
+  id: string;
+  fromNodeId: string;
+  toNodeId: string;
+  fromPort: 'exec' | 'true' | 'false' | 'complete' | 'value';
+  toPort: 'exec' | 'input';
+}
+
+export interface VisualLogicGraphDefinition extends WoAContentBase {
+  triggerEvent: string;
+  enabled: boolean;
+  variables: Record<string, string | number | boolean>;
+  nodes: VisualLogicNode[];
+  edges: VisualLogicEdge[];
+}
+
 export interface ModContentDatabase {
   items: ItemDefinition[];
   weapons: WeaponDefinition[];
@@ -483,6 +807,11 @@ export interface ModContentDatabase {
   lootTables?: LootTableDefinition[];
   dialogues?: DialogueTreeDefinition[];
   worldObjects?: WorldObjectDefinition[];
+  prefabs?: PrefabDefinition[];
+  aiBehaviors?: BehaviorGraphDefinition[];
+  worldMaps?: WorldMapDefinition[];
+  proceduralRules?: ProceduralRuleDefinition[];
+  visualLogicGraphs?: VisualLogicGraphDefinition[];
 }
 
 export interface ContentValidationIssue {

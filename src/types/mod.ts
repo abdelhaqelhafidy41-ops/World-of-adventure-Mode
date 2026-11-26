@@ -261,7 +261,13 @@ export type ModTemplateId =
   | 'weapon-pack'
   | 'quest-npc'
   | 'building-dungeon'
-  | 'biome-creature';
+  | 'biome-creature'
+  | 'character-mod'
+  | 'npc-mod'
+  | 'quest-mod'
+  | 'item-mod'
+  | 'audio-mod'
+  | 'complete-mod';
 
 export interface ModLoadOrderConfig {
   priority: number; // 0..1000, higher loads later (overrides earlier)
@@ -296,6 +302,16 @@ export interface ModDependency {
   optional?: boolean;
 }
 
+export interface ModHubMetadata {
+  tags?: string[];
+  license?: string;
+  homepage?: string;
+  iconAssetPath?: string;
+  screenshotAssetPaths?: string[];
+  shortSummary?: string;
+  releaseChannel?: 'alpha' | 'beta' | 'stable';
+}
+
 export interface ModManifest {
   modId: string;
   name: string;
@@ -318,6 +334,8 @@ export interface ModManifest {
   loadOrder?: ModLoadOrderConfig;
   changelog?: ModChangelogEntry[];
   templateId?: ModTemplateId;
+  hubMetadata?: ModHubMetadata;
+  stripDevDebugOnExport?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -369,7 +387,10 @@ export type ValidationCategory =
   | 'data'
   | 'dependencies'
   | 'properties'
-  | 'security';
+  | 'security'
+  | 'world'
+  | 'logic'
+  | 'prefabs';
 
 export interface ValidationIssue {
   id: string;
@@ -381,8 +402,8 @@ export interface ValidationIssue {
   property: string;
   problem: string;
   suggestion: string;
-  targetType?: 'manifest' | 'file' | 'asset' | 'content';
-  targetRef?: string; // file path, asset id, or `${contentKind}:${uid}`
+  targetType?: 'manifest' | 'file' | 'asset' | 'content' | 'sdk';
+  targetRef?: string; // file path, asset id, `${contentKind}:${uid}`, or `${sdkKind}:${uid}`
 }
 
 export interface ModValidationReport {

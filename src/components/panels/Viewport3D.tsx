@@ -11,6 +11,7 @@ import {
   ArrowUp,
   Axis3d,
   Box,
+  Boxes,
   BoxSelect,
   Check,
   ChevronsDown,
@@ -65,6 +66,7 @@ import {
   ContextMenuEntry,
   ContextMenuHeader,
 } from '@/src/components/common/ContextMenu';
+import { createPrefabFromAsset } from '@/src/core/prefab/prefabService';
 import { getAssetBlobRecord } from '@/src/core/storage/modRepository';
 import {
   AxisConstraint,
@@ -105,6 +107,7 @@ export interface Viewport3DHandle {
 }
 
 interface Viewport3DProps {
+  modId?: string;
   asset: ModAsset | null;
   projectAssets?: ModAsset[];
   contents?: ModContentDatabase;
@@ -141,7 +144,10 @@ interface Viewport3DProps {
     patch: Partial<ModAsset>,
     options?: { recordUndo?: boolean; historyGroupKey?: string }
   ) => void;
-  onUpdateContents?: (next: ModContentDatabase) => void;
+  onUpdateContents?: (
+    next: ModContentDatabase,
+    opts?: { recordUndo?: boolean; historyGroupKey?: string }
+  ) => void;
   onRenameAsset?: (assetId: string, newName: string) => void;
   onDuplicateAsset?: (assetId: string) => Promise<void>;
   onDeleteAsset?: (assetId: string) => Promise<void>;
@@ -225,6 +231,7 @@ function hasAnyHiddenHierarchyNode(nodes: SceneHierarchyNode[]): boolean {
 export const Viewport3D = React.forwardRef<Viewport3DHandle, Viewport3DProps>(
   (
     {
+      modId = 'mod',
       asset,
       projectAssets = [],
       contents,
@@ -1817,6 +1824,28 @@ export const Viewport3D = React.forwardRef<Viewport3DHandle, Viewport3DProps>(
         });
       }
 
+      if (!isMulti && contents && onUpdateContents) {
+        entries.push({
+          id: 'save-as-prefab',
+          label: t('ctx3d.saveAsPrefab'),
+          icon: <Boxes className="w-3.5 h-3.5 text-emerald-500" />,
+          onSelect: () => {
+            const prefab = createPrefabFromAsset(modId || 'mod', asset, {
+              selectedNodeIds: isRoot ? [] : targetIds,
+              hierarchy,
+            });
+            onUpdateContents(
+              {
+                ...contents,
+                prefabs: [...(contents.prefabs ?? []), prefab],
+              },
+              { recordUndo: true }
+            );
+            onLog('success', '3D Editor', t('ctx3d.logPrefabSaved', { name: prefab.name }));
+          },
+        });
+      }
+
       // Material submenu (if mesh or root has meshes)
       if (!isMulti && primaryInfo?.canEditMaterial) {
         const matTargetId = isRoot ? null : primaryId;
@@ -2015,8 +2044,10 @@ export const Viewport3D = React.forwardRef<Viewport3DHandle, Viewport3DProps>(
       handleDuplicateSelection,
       handleOpenRename,
       handlePasteClipboard,
+      hierarchy,
       linkableContentCandidates.length,
       linkedModEntries,
+      modId,
       modKey,
       onDeleteAsset,
       onLog,
@@ -2924,15 +2955,33 @@ export const Viewport3D = React.forwardRef<Viewport3DHandle, Viewport3DProps>(
                         <button
                           key={mc.uid}
                           type="button"
-                          onClick={() => {
-                            engineRef.current?.updateNodeMaterial(activeModal.nodeId, {
-                              name: mc.name,
-                              color: mc.baseColor,
-                              roughness: mc.roughness,
-                              metalness: mc.metallic,
-                              emissive: mc.emissiveColor,
-                              emissiveIntensity: mc.emissiveIntensity,
-                            });
+                          onClick={async () => {
+                            const loadTexBlob = async (refPath?: string) => {
+                              if (!refPath) return undefined;
+                              const match = projectAssets.find(
+                                (a) =>
+                                  a.type === 'texture' &&
+                                  (a.path === refPath || a.id === refPath)
+                              );
+                              if (!match) return undefined;
+                              const rec = await getAssetBlobRecord(match.blobKey);
+                              return rec?.blob;
+                            };
+                            const [albedo, normal, ao] = await Promise.all([
+                              loadTexBlob(mc.albedoTexture),
+                              loadTexBlob(mc.normalTexture),
+                              loadTexBlob(mc.aoTexture),
+                            ]);
+                            await engineRef.current?.applyMaterialConfigToPreview(
+                              mc,
+                              activeModal.nodeId,
+                              { albedo, normal, ao }
+                            );
+                            onLog(
+                              'info',
+                              '3D Editor',
+                              t('ctx3d.logMaterialApplied', { name: mc.name })
+                            );
                             setActiveModal(null);
                           }}
                           className="w-full flex items-center justify-between gap-2 px-3 py-2 text-xs rounded border border-slate-200 dark:border-white/10 hover:bg-blue-600/10 text-start"

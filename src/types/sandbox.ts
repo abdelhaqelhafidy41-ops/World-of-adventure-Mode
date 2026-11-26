@@ -1,12 +1,19 @@
 import {
   ArmorDefinition,
+  BehaviorGraphDefinition,
   BuildingDefinition,
+  DialogueTreeDefinition,
   ItemDefinition,
+  LootTableDefinition,
   ModAsset,
   ModManifest,
   MonsterDefinition,
   NpcDefinition,
+  PrefabDefinition,
+  ProceduralRuleDefinition,
+  VisualLogicGraphDefinition,
   WeaponDefinition,
+  WorldObjectDefinition,
 } from '@/src/types/mod';
 
 export type SandboxPreviewMode =
@@ -27,6 +34,17 @@ export type SandboxAnimationClip =
   | 'interact';
 
 export type SandboxRunState = 'stopped' | 'playing';
+export type SandboxWeather = 'clear' | 'rain' | 'storm';
+export type SandboxTimeOfDay = 'dawn' | 'day' | 'dusk' | 'night';
+
+export interface SandboxDebugState {
+  weather: SandboxWeather;
+  timeOfDay: SandboxTimeOfDay;
+  godMode: boolean;
+  timeScale?: number;
+  showAiDebug?: boolean;
+  playerCoords?: { x: number; y: number; z: number };
+}
 
 export interface SandboxSnapshot {
   capturedAt: string;
@@ -39,6 +57,13 @@ export interface SandboxSnapshot {
   monsters: MonsterDefinition[];
   buildings: BuildingDefinition[];
   entryScriptContent: string;
+  lootTables?: LootTableDefinition[];
+  dialogues?: DialogueTreeDefinition[];
+  prefabs?: PrefabDefinition[];
+  aiBehaviors?: BehaviorGraphDefinition[];
+  visualLogicGraphs?: VisualLogicGraphDefinition[];
+  worldObjects?: WorldObjectDefinition[];
+  proceduralRules?: ProceduralRuleDefinition[];
 }
 
 export interface SandboxEntitySummary {

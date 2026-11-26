@@ -17,11 +17,13 @@ import {
   CONTENT_KIND_LABELS,
   EXTENDED_CONFIG_FILE_PATHS,
   NAMESPACED_ID_REGEX,
+  SDK_CONFIG_FILE_PATHS,
   collectAllContentIds,
   resolveProjectContents,
   validateAnimationConfig,
   validateArmor,
   validateAudioConfig,
+  validateBehaviorGraphConfig,
   validateBuilding,
   validateDialogueTreeConfig,
   validateItem,
@@ -29,12 +31,21 @@ import {
   validateMaterialConfig,
   validateMonster,
   validateNpc,
+  validatePrefabConfig,
+  validateProceduralRuleConfig,
   validateQuest,
   validateRecipe,
   validateSpawn,
+  validateVisualLogicGraphConfig,
   validateWeapon,
+  validateWorldMapConfig,
   validateWorldObjectConfig,
 } from '@/src/core/content/contentRegistry';
+import {
+  validateBehaviorGraph,
+  validateDialogueTreeGraph,
+  validateVisualLogicGraph,
+} from '@/src/core/graphs/nodeGraphEngine';
 import {
   CURRENT_GAME_VERSION,
   CURRENT_MOD_CONTENT_SCHEMA_VERSION,
@@ -982,7 +993,8 @@ export async function validateModProject(
               }
             } else if (
               Object.values(CONTENT_FILE_PATHS).includes(file.path) ||
-              Object.values(EXTENDED_CONFIG_FILE_PATHS).includes(file.path)
+              Object.values(EXTENDED_CONFIG_FILE_PATHS).includes(file.path) ||
+              Object.values(SDK_CONFIG_FILE_PATHS).includes(file.path)
             ) {
               if (parsed.schemaVersion !== undefined) {
                 if (!isSupportedContentSchemaVersion(parsed.schemaVersion)) {
@@ -2012,6 +2024,16 @@ export async function validateModProject(
         ref
       );
     }
+    if (mat.aoTexture?.trim()) {
+      checkAssetRef(
+        EXTENDED_CONFIG_FILE_PATHS.material,
+        label,
+        'aoTexture',
+        mat.aoTexture,
+        'texture',
+        ref
+      );
+    }
   });
 
   (contents.lootTables ?? []).forEach((table) => {
@@ -2059,6 +2081,18 @@ export async function validateModProject(
         );
       }
     });
+    const dlgGraphIssues = validateDialogueTreeGraph(tree);
+    for (const gi of dlgGraphIssues) {
+      pushIssue(gi.level === 'error' ? 'error' : 'warning', 'INVALID_DIALOGUE_GRAPH', 'logic', {
+        file: EXTENDED_CONFIG_FILE_PATHS.dialogue,
+        object: label,
+        property: gi.nodeId ?? 'nodes',
+        problem: gi.message,
+        suggestion: 'Connect dialogue branches back cleanly and verify root node accessibility.',
+        targetType: 'content',
+        targetRef: ref,
+      });
+    }
   });
 
   (contents.worldObjects ?? []).forEach((wo) => {
@@ -2113,6 +2147,165 @@ export async function validateModProject(
         wo.questId,
         ref
       );
+    }
+  });
+
+  // SDK Prefabs
+  (contents.prefabs ?? []).forEach((prefab) => {
+    const fieldIssues = validatePrefabConfig(prefab, manifest.modId, idIndex);
+    const label = `${prefab.name || 'Prefab'} (${prefab.id || prefab.uid})`;
+    const ref = `prefab:${prefab.uid}`;
+    for (const fi of fieldIssues) {
+      pushIssue(fi.level === 'error' ? 'error' : 'warning', 'INVALID_PREFAB', 'prefabs', {
+        file: SDK_CONFIG_FILE_PATHS.prefab,
+        object: label,
+        property: fi.field,
+        problem: fi.message,
+        suggestion: suggestionForField(fi.field),
+        targetType: 'sdk',
+        targetRef: ref,
+      });
+    }
+    prefab.nodes.forEach((node, idx) => {
+      if (node.texturePath?.trim()) {
+        checkAssetRef(
+          SDK_CONFIG_FILE_PATHS.prefab,
+          label,
+          `nodes[${idx}].texturePath`,
+          node.texturePath,
+          'texture',
+          ref
+        );
+      }
+    });
+    prefab.references.assetPaths.forEach((ap, idx) => {
+      if (ap.trim()) {
+        checkAssetRef(
+          SDK_CONFIG_FILE_PATHS.prefab,
+          label,
+          `references.assetPaths[${idx}]`,
+          ap,
+          '3d-model',
+          ref
+        );
+      }
+    });
+  });
+
+  // SDK AI Behavior Graphs
+  (contents.aiBehaviors ?? []).forEach((graph) => {
+    const fieldIssues = validateBehaviorGraphConfig(graph, manifest.modId, idIndex);
+    const label = `${graph.name || 'AI Behavior'} (${graph.id || graph.uid})`;
+    const ref = `ai_behavior:${graph.uid}`;
+    for (const fi of fieldIssues) {
+      pushIssue(fi.level === 'error' ? 'error' : 'warning', 'INVALID_AI_GRAPH', 'logic', {
+        file: SDK_CONFIG_FILE_PATHS.ai_behavior,
+        object: label,
+        property: fi.field,
+        problem: fi.message,
+        suggestion: suggestionForField(fi.field),
+        targetType: 'sdk',
+        targetRef: ref,
+      });
+    }
+    const graphIssues = validateBehaviorGraph(graph);
+    for (const gi of graphIssues) {
+      pushIssue(gi.level === 'error' ? 'error' : 'warning', 'AI_GRAPH_TOPOLOGY', 'logic', {
+        file: SDK_CONFIG_FILE_PATHS.ai_behavior,
+        object: label,
+        property: gi.nodeId ?? 'edges',
+        problem: gi.message,
+        suggestion: 'Verify Start node connectivity and remove any cyclic behavior loops.',
+        targetType: 'sdk',
+        targetRef: ref,
+      });
+    }
+  });
+
+  // SDK Visual Logic Graphs
+  (contents.visualLogicGraphs ?? []).forEach((lg) => {
+    const fieldIssues = validateVisualLogicGraphConfig(lg, manifest.modId, idIndex);
+    const label = `${lg.name || 'Logic Graph'} (${lg.id || lg.uid})`;
+    const ref = `logic_graph:${lg.uid}`;
+    for (const fi of fieldIssues) {
+      pushIssue(fi.level === 'error' ? 'error' : 'warning', 'INVALID_LOGIC_GRAPH', 'logic', {
+        file: SDK_CONFIG_FILE_PATHS.logic_graph,
+        object: label,
+        property: fi.field,
+        problem: fi.message,
+        suggestion: suggestionForField(fi.field),
+        targetType: 'sdk',
+        targetRef: ref,
+      });
+    }
+    const graphIssues = validateVisualLogicGraph(lg);
+    for (const gi of graphIssues) {
+      pushIssue(gi.level === 'error' ? 'error' : 'warning', 'LOGIC_GRAPH_TOPOLOGY', 'logic', {
+        file: SDK_CONFIG_FILE_PATHS.logic_graph,
+        object: label,
+        property: gi.nodeId ?? 'edges',
+        problem: gi.message,
+        suggestion: 'Ensure every Event node reaches Actions without infinite cycles.',
+        targetType: 'sdk',
+        targetRef: ref,
+      });
+    }
+  });
+
+  // SDK World Maps & Procedural Rules
+  (contents.worldMaps ?? []).forEach((wm) => {
+    const fieldIssues = validateWorldMapConfig(wm, manifest.modId, idIndex);
+    const label = `${wm.name || 'World Map'} (${wm.id || wm.uid})`;
+    const ref = `world_map:${wm.uid}`;
+    for (const fi of fieldIssues) {
+      pushIssue(fi.level === 'error' ? 'error' : 'warning', 'INVALID_WORLD_MAP', 'world', {
+        file: SDK_CONFIG_FILE_PATHS.world_map,
+        object: label,
+        property: fi.field,
+        problem: fi.message,
+        suggestion: suggestionForField(fi.field),
+        targetType: 'sdk',
+        targetRef: ref,
+      });
+    }
+    wm.objects.forEach((obj, idx) => {
+      if (obj.refId.trim()) {
+        checkNamespacedReference(
+          SDK_CONFIG_FILE_PATHS.world_map,
+          label,
+          `objects[${idx}].refId`,
+          obj.refId,
+          ref
+        );
+      }
+    });
+  });
+
+  (contents.proceduralRules ?? []).forEach((pr) => {
+    const fieldIssues = validateProceduralRuleConfig(pr, manifest.modId, idIndex);
+    const label = `${pr.name || 'Procedural Rule'} (${pr.id || pr.uid})`;
+    const ref = `procedural_rule:${pr.uid}`;
+    for (const fi of fieldIssues) {
+      pushIssue(fi.level === 'error' ? 'error' : 'warning', 'INVALID_PROCEDURAL_RULE', 'world', {
+        file: SDK_CONFIG_FILE_PATHS.procedural_rule,
+        object: label,
+        property: fi.field,
+        problem: fi.message,
+        suggestion: suggestionForField(fi.field),
+        targetType: 'sdk',
+        targetRef: ref,
+      });
+    }
+    if (!pr.avoidWater) {
+      pushIssue('warning', 'PROCEDURAL_WATER_PLACEMENT', 'world', {
+        file: SDK_CONFIG_FILE_PATHS.procedural_rule,
+        object: label,
+        property: 'avoidWater',
+        problem: 'Avoid Water exclusion is disabled on procedural rule; props may spawn inside oceans or lakes.',
+        suggestion: 'Enable avoidWater unless intentionally placing aquatic props.',
+        targetType: 'sdk',
+        targetRef: ref,
+      });
     }
   });
 
@@ -2458,7 +2651,12 @@ export async function validateModProject(
     (contents.materials?.length ?? 0) +
     (contents.lootTables?.length ?? 0) +
     (contents.dialogues?.length ?? 0) +
-    (contents.worldObjects?.length ?? 0);
+    (contents.worldObjects?.length ?? 0) +
+    (contents.prefabs?.length ?? 0) +
+    (contents.aiBehaviors?.length ?? 0) +
+    (contents.worldMaps?.length ?? 0) +
+    (contents.proceduralRules?.length ?? 0) +
+    (contents.visualLogicGraphs?.length ?? 0);
 
   return {
     id: `val_${Date.now()}`,

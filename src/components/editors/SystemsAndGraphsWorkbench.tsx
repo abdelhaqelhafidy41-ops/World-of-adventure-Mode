@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Archive,
   BookOpen,
+  Boxes,
+  Brain,
   Check,
   Copy,
   Download,
@@ -12,6 +14,7 @@ import {
   History,
   Layers,
   Link2,
+  Map as MapIcon,
   Network,
   Plus,
   RefreshCw,
@@ -22,8 +25,13 @@ import {
   Trash2,
   Unlink,
   Upload,
+  Workflow,
 } from 'lucide-react';
 import { AnyWorkbenchKind } from '@/src/components/content/ContentEditorsWorkbench';
+import {
+  SdkStudioWorkbench,
+  type SdkSubTab,
+} from '@/src/components/studios/SdkStudioWorkbench';
 import {
   getWoaCompatibilityMatrix,
   MIN_SUPPORTED_GAME_VERSION,
@@ -62,6 +70,10 @@ import {
 export type SystemsSubTab =
   | 'quest-graph'
   | 'asset-graph'
+  | 'prefabs'
+  | 'world'
+  | 'ai_behavior'
+  | 'logic_graph'
   | 'localization'
   | 'deps-order'
   | 'docs-backups';
@@ -70,8 +82,12 @@ interface SystemsAndGraphsWorkbenchProps {
   project: ModProject;
   allProjects: ModProject[];
   backups: ProjectBackupRecord[];
+  sdkFocus?: { subTab: SdkSubTab; uid?: string | null; token: number } | null;
   onUpdateManifest: (patch: Partial<ModManifest>) => void;
-  onUpdateContents: (next: ModContentDatabase) => void;
+  onUpdateContents: (
+    next: ModContentDatabase,
+    opts?: { recordUndo?: boolean; historyGroupKey?: string }
+  ) => void;
   onSaveFile: (path: string, content: string) => void;
   onUpsertLocalizationFile: (locale: string, content: string) => void;
   onBumpVersion: (part: 'patch' | 'minor' | 'major', summary: string) => void;
@@ -261,6 +277,7 @@ export const SystemsAndGraphsWorkbench: React.FC<SystemsAndGraphsWorkbenchProps>
   project,
   allProjects,
   backups,
+  sdkFocus,
   onUpdateManifest,
   onUpdateContents,
   onSaveFile,
@@ -277,6 +294,15 @@ export const SystemsAndGraphsWorkbench: React.FC<SystemsAndGraphsWorkbenchProps>
   const { t } = useI18n();
   const platformInfo = usePlatform();
   const [subTab, setSubTab] = useState<SystemsSubTab>('quest-graph');
+  const [sdkSelectedUid, setSdkSelectedUid] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!sdkFocus) return;
+    setSubTab(sdkFocus.subTab);
+    if (sdkFocus.uid !== undefined) {
+      setSdkSelectedUid(sdkFocus.uid ?? null);
+    }
+  }, [sdkFocus]);
 
   const contents = useMemo(() => resolveProjectContents(project), [project]);
 
@@ -760,6 +786,28 @@ export const SystemsAndGraphsWorkbench: React.FC<SystemsAndGraphsWorkbenchProps>
       icon: <Network className="w-3.5 h-3.5" />,
     },
     {
+      id: 'prefabs',
+      label: t('systems.tabPrefabs', { count: (contents.prefabs ?? []).length }),
+      icon: <Boxes className="w-3.5 h-3.5" />,
+    },
+    {
+      id: 'world',
+      label: t('systems.tabWorldStudio', { count: (contents.worldMaps ?? []).length }),
+      icon: <MapIcon className="w-3.5 h-3.5" />,
+    },
+    {
+      id: 'ai_behavior',
+      label: t('systems.tabAiBehavior', { count: (contents.aiBehaviors ?? []).length }),
+      icon: <Brain className="w-3.5 h-3.5" />,
+    },
+    {
+      id: 'logic_graph',
+      label: t('systems.tabLogicGraph', {
+        count: (contents.visualLogicGraphs ?? []).length,
+      }),
+      icon: <Workflow className="w-3.5 h-3.5" />,
+    },
+    {
       id: 'localization',
       label: t('systems.locTabLabel', { count: localeFiles.length }),
       icon: <Globe className="w-3.5 h-3.5" />,
@@ -814,6 +862,24 @@ export const SystemsAndGraphsWorkbench: React.FC<SystemsAndGraphsWorkbenchProps>
 
       {/* Main Content Area */}
       <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-5">
+        {(subTab === 'prefabs' ||
+          subTab === 'world' ||
+          subTab === 'ai_behavior' ||
+          subTab === 'logic_graph') && (
+          <div className="max-w-7xl mx-auto">
+            <SdkStudioWorkbench
+              modId={project.manifest.modId}
+              contents={contents}
+              assets={project.assets}
+              activeSubTab={subTab}
+              selectedUid={sdkSelectedUid}
+              onSelectSubTab={(tab) => setSubTab(tab)}
+              onSelectUid={setSdkSelectedUid}
+              onUpdateContents={onUpdateContents}
+            />
+          </div>
+        )}
+
         {/* TAB 1: QUEST GRAPH EDITOR */}
         {subTab === 'quest-graph' && (
           <div className="max-w-6xl mx-auto space-y-4">

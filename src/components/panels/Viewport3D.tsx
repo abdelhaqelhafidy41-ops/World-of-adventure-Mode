@@ -2963,9 +2963,12 @@ export const Viewport3D = React.forwardRef<Viewport3DHandle, Viewport3DProps>(
                                   a.type === 'texture' &&
                                   (a.path === refPath || a.id === refPath)
                               );
-                              if (!match) return undefined;
+                              if (!match?.blobKey) return undefined;
                               const rec = await getAssetBlobRecord(match.blobKey);
-                              return rec?.blob;
+                              if (!rec) return undefined;
+                              return new Blob([rec.data], {
+                                type: rec.mimeType || match.mimeType || 'image/png',
+                              });
                             };
                             const [albedo, normal, ao] = await Promise.all([
                               loadTexBlob(mc.albedoTexture),

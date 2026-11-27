@@ -14,6 +14,9 @@ import {
   BuildingCategory,
   BuildingDefinition,
   ContentKind,
+  ContentSpawnBehavior,
+  ContentSpawnConfig,
+  ContentSpawnLocation,
   ContentValidationIssue,
   CraftingRecipeDefinition,
   CraftingStationType,
@@ -27,6 +30,7 @@ import {
   MaterialConfigEntry,
   ModAsset,
   ModContentDatabase,
+  ModEventDefinition,
   ModFileNode,
   ModManifest,
   ModProject,
@@ -40,12 +44,21 @@ import {
   QuestObjectiveType,
   SdkConfigKind,
   SpawnDefinition,
+  SpawnLocationArea,
+  SpawnLocationConditions,
+  SpawnPositionMode,
+  SpawnTerrainAlignment,
+  SpawnTimeOfDay,
+  SpawnVec3,
   VisualLogicGraphDefinition,
   WeaponDefinition,
+  WeatherCondition,
   WoAContentBase,
   WorldMapDefinition,
   WorldObjectDefinition,
+  WorldSpawnContentKind,
 } from '@/src/types/mod';
+import { createEventFromTemplate } from '@/src/core/events/eventCatalog';
 
 export const CONTENT_FILE_PATHS: Record<ContentKind, string> = {
   item: 'data/items.json',
@@ -74,6 +87,7 @@ export const SDK_CONFIG_FILE_PATHS: Record<SdkConfigKind, string> = {
   world_map: 'data/worlds.json',
   procedural_rule: 'data/procedural.json',
   logic_graph: 'data/logic_graphs.json',
+  event: 'data/events.json',
 };
 
 export const CONTENT_KIND_LABELS: Record<ContentKind, string> = {
@@ -246,6 +260,7 @@ export function createEmptyContentDatabase(): ModContentDatabase {
     worldMaps: [],
     proceduralRules: [],
     visualLogicGraphs: [],
+    events: [],
   };
 }
 
@@ -315,6 +330,7 @@ export function collectAllContentIds(db: ModContentDatabase): Map<string, string
   add(db.worldMaps ?? []);
   add(db.proceduralRules ?? []);
   add(db.visualLogicGraphs ?? []);
+  add(db.events ?? []);
   return map;
 }
 
@@ -435,6 +451,585 @@ function validateLootTable(
   return issues;
 }
 
+export const SPAWN_POSITION_MODES: readonly SpawnPositionMode[] = [
+  'absolute',
+  'relative_world_spawn',
+  'relative_reference',
+  'random_area',
+] as const;
+
+export const SPAWN_TERRAIN_ALIGNMENTS: readonly SpawnTerrainAlignment[] = [
+  'exact_y',
+  'conform_terrain',
+  'flatten',
+] as const;
+
+const VALID_TIME_OF_DAY_SET = new Set<SpawnTimeOfDay>(['any', 'day', 'night', 'dawn', 'dusk']);
+const VALID_WEATHER_SET = new Set<WeatherCondition>(['any', 'clear', 'rain', 'storm']);
+const VALID_POSITION_MODE_SET = new Set<SpawnPositionMode>(SPAWN_POSITION_MODES);
+const VALID_TERRAIN_ALIGNMENT_SET = new Set<SpawnTerrainAlignment>(SPAWN_TERRAIN_ALIGNMENTS);
+
+function createDefaultSpawnConditions(): SpawnLocationConditions {
+  return {
+    onNewWorld: true,
+    onWorldLoadIfUnspawned: true,
+    onChunkLoad: true,
+    onPlayerEnterArea: false,
+    enterAreaRadius: 32,
+    timeOfDay: 'any',
+    weather: 'any',
+    biomes: [],
+    regionOrDimension: '',
+    requiredQuestId: '',
+    worldCondition: '',
+    minPlayerDistance: undefined,
+    maxPlayerDistance: undefined,
+    preventDuplicateOnChunkReload: true,
+  };
+}
+
+function createDefaultSpawnArea(pos?: Partial<SpawnVec3>): SpawnLocationArea {
+  const cx = Number.isFinite(pos?.x) ? (pos!.x as number) : 0;
+  const cy = Number.isFinite(pos?.y) ? (pos!.y as number) : 0;
+  const cz = Number.isFinite(pos?.z) ? (pos!.z as number) : 0;
+  return {
+    minX: cx - 16,
+    maxX: cx + 16,
+    minY: cy,
+    maxY: cy + 8,
+    minZ: cz - 16,
+    maxZ: cz + 16,
+    minDistance: 6,
+    maxInstances: 3,
+    deterministicSeedOffset: 0,
+  };
+}
+
+export function createDefaultSpawnLocation(
+  index = 0,
+  partial?: Partial<ContentSpawnLocation>
+): ContentSpawnLocation {
+  const suffix = `${index + 1}_${Math.random().toString(36).slice(2, 6)}`;
+  const position: SpawnVec3 = {
+    x: partial?.position?.x ?? 0,
+    y: partial?.position?.y ?? 0,
+    z: partial?.position?.z ?? 0,
+  };
+  const rotation: SpawnVec3 = {
+    x: partial?.rotation?.x ?? 0,
+    y: partial?.rotation?.y ?? 0,
+    z: partial?.rotation?.z ?? 0,
+  };
+  const scale: SpawnVec3 = {
+    x: partial?.scale?.x ?? 1,
+    y: partial?.scale?.y ?? 1,
+    z: partial?.scale?.z ?? 1,
+  };
+  return {
+    spawnId: partial?.spawnId ?? `spawn_loc_${suffix}`,
+    label: partial?.label ?? `Location ${index + 1}`,
+    enabled: partial?.enabled ?? true,
+    quantity: partial?.quantity ?? 1,
+    position,
+    rotation,
+    scale,
+    area: partial?.area ? { ...partial.area } : createDefaultSpawnArea(position),
+    conditions: {
+      ...createDefaultSpawnConditions(),
+      ...(partial?.conditions ?? {}),
+      biomes: [...(partial?.conditions?.biomes ?? [])],
+    },
+  };
+}
+
+export function createDefaultSpawnBehavior(
+  kind?: WorldSpawnContentKind
+): ContentSpawnBehavior {
+  if (kind === 'npc') {
+    return {
+      npcBehavior: 'stationary',
+      uniquePersistent: true,
+      dialogueAvailable: true,
+    };
+  }
+  if (kind === 'monster') {
+    return {
+      maxActiveInstances: 4,
+      respawnEnabled: true,
+      respawnDelaySeconds: 180,
+      groupBehavior: 'pack',
+    };
+  }
+  if (kind === 'building' || kind === 'world_object') {
+    return {
+      terrainAlignment: 'conform_terrain',
+      validateCollisionOverlap: true,
+      footprintRadius: kind === 'building' ? 4 : 1.5,
+    };
+  }
+  return {
+    pickupAvailable: true,
+    respawnEnabled: false,
+    respawnDelaySeconds: 120,
+    visualFloat: false,
+    visualRotate: false,
+  };
+}
+
+export function createDefaultSpawnConfig(
+  kind?: WorldSpawnContentKind,
+  initialPos?: Partial<SpawnVec3>,
+  initialRot?: Partial<SpawnVec3>,
+  initialScale?: Partial<SpawnVec3>,
+  enabled = true
+): ContentSpawnConfig {
+  return {
+    enabled,
+    mode: 'absolute',
+    referenceObjectId: '',
+    behavior: createDefaultSpawnBehavior(kind),
+    locations: [
+      createDefaultSpawnLocation(0, {
+        position: {
+          x: initialPos?.x ?? 0,
+          y: initialPos?.y ?? 0,
+          z: initialPos?.z ?? 0,
+        },
+        rotation: {
+          x: initialRot?.x ?? 0,
+          y: initialRot?.y ?? 0,
+          z: initialRot?.z ?? 0,
+        },
+        scale: {
+          x: initialScale?.x ?? 1,
+          y: initialScale?.y ?? 1,
+          z: initialScale?.z ?? 1,
+        },
+      }),
+    ],
+  };
+}
+
+export function cloneSpawnConfig(
+  cfg?: ContentSpawnConfig
+): ContentSpawnConfig | undefined {
+  if (!cfg) return undefined;
+  return {
+    enabled: Boolean(cfg.enabled),
+    mode: cfg.mode,
+    referenceObjectId: cfg.referenceObjectId,
+    behavior: cfg.behavior ? { ...cfg.behavior } : undefined,
+    locations: (cfg.locations ?? []).map((loc, idx) => ({
+      ...loc,
+      spawnId: loc.spawnId ? `${loc.spawnId}_copy_${idx + 1}` : `spawn_loc_${idx + 1}`,
+      position: { ...loc.position },
+      rotation: { ...loc.rotation },
+      scale: { ...loc.scale },
+      area: loc.area ? { ...loc.area } : undefined,
+      conditions: {
+        ...loc.conditions,
+        biomes: [...(loc.conditions?.biomes ?? [])],
+      },
+    })),
+  };
+}
+
+function readNumOrFallback(raw: unknown, fallback: number): number {
+  if (typeof raw === 'number') return raw;
+  if (typeof raw === 'string' && raw.trim() !== '') {
+    const parsed = Number(raw);
+    return parsed;
+  }
+  return fallback;
+}
+
+export function normalizeContentSpawnConfig(
+  raw: unknown
+): ContentSpawnConfig | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Record<string, unknown>;
+  const rawMode = typeof obj.mode === 'string' ? obj.mode : 'absolute';
+  const mode = (VALID_POSITION_MODE_SET.has(rawMode as SpawnPositionMode)
+    ? rawMode
+    : rawMode) as SpawnPositionMode;
+
+  const rawLocs = Array.isArray(obj.locations) ? obj.locations : [];
+  const locations: ContentSpawnLocation[] = rawLocs.map((item, idx) => {
+    const loc = (item && typeof item === 'object' ? item : {}) as Record<string, unknown>;
+    const rawPos = (loc.position && typeof loc.position === 'object' ? loc.position : {}) as Record<string, unknown>;
+    const rawRot = (loc.rotation && typeof loc.rotation === 'object' ? loc.rotation : {}) as Record<string, unknown>;
+    const rawScale = (loc.scale && typeof loc.scale === 'object' ? loc.scale : {}) as Record<string, unknown>;
+    const rawCond = (loc.conditions && typeof loc.conditions === 'object' ? loc.conditions : {}) as Record<string, unknown>;
+    const rawArea = loc.area && typeof loc.area === 'object' ? (loc.area as Record<string, unknown>) : null;
+
+    const position: SpawnVec3 = {
+      x: readNumOrFallback(rawPos.x, 0),
+      y: readNumOrFallback(rawPos.y, 0),
+      z: readNumOrFallback(rawPos.z, 0),
+    };
+    const rotation: SpawnVec3 = {
+      x: readNumOrFallback(rawRot.x, 0),
+      y: readNumOrFallback(rawRot.y, 0),
+      z: readNumOrFallback(rawRot.z, 0),
+    };
+    const scale: SpawnVec3 = {
+      x: readNumOrFallback(rawScale.x, 1),
+      y: readNumOrFallback(rawScale.y, 1),
+      z: readNumOrFallback(rawScale.z, 1),
+    };
+
+    const rawTime = typeof rawCond.timeOfDay === 'string' ? rawCond.timeOfDay : 'any';
+    const rawWeather = typeof rawCond.weather === 'string' ? rawCond.weather : 'any';
+
+    const normalized: ContentSpawnLocation = {
+      spawnId: typeof loc.spawnId === 'string' ? loc.spawnId : `spawn_loc_${idx + 1}`,
+      label: typeof loc.label === 'string' ? loc.label : `Location ${idx + 1}`,
+      enabled: typeof loc.enabled === 'boolean' ? loc.enabled : true,
+      quantity: readNumOrFallback(loc.quantity, 1),
+      position,
+      rotation,
+      scale,
+      conditions: {
+        onNewWorld: typeof rawCond.onNewWorld === 'boolean' ? rawCond.onNewWorld : true,
+        onWorldLoadIfUnspawned:
+          typeof rawCond.onWorldLoadIfUnspawned === 'boolean'
+            ? rawCond.onWorldLoadIfUnspawned
+            : true,
+        onChunkLoad: typeof rawCond.onChunkLoad === 'boolean' ? rawCond.onChunkLoad : true,
+        onPlayerEnterArea:
+          typeof rawCond.onPlayerEnterArea === 'boolean' ? rawCond.onPlayerEnterArea : false,
+        enterAreaRadius: readNumOrFallback(rawCond.enterAreaRadius, 32),
+        timeOfDay: VALID_TIME_OF_DAY_SET.has(rawTime as SpawnTimeOfDay)
+          ? (rawTime as SpawnTimeOfDay)
+          : 'any',
+        weather: VALID_WEATHER_SET.has(rawWeather as WeatherCondition)
+          ? (rawWeather as WeatherCondition)
+          : 'any',
+        biomes: Array.isArray(rawCond.biomes)
+          ? rawCond.biomes.map((b) => String(b))
+          : [],
+        regionOrDimension:
+          typeof rawCond.regionOrDimension === 'string' ? rawCond.regionOrDimension : '',
+        requiredQuestId:
+          typeof rawCond.requiredQuestId === 'string' ? rawCond.requiredQuestId : '',
+        worldCondition:
+          typeof rawCond.worldCondition === 'string' ? rawCond.worldCondition : '',
+        minPlayerDistance:
+          rawCond.minPlayerDistance !== undefined && rawCond.minPlayerDistance !== null && rawCond.minPlayerDistance !== ''
+            ? readNumOrFallback(rawCond.minPlayerDistance, 0)
+            : undefined,
+        maxPlayerDistance:
+          rawCond.maxPlayerDistance !== undefined && rawCond.maxPlayerDistance !== null && rawCond.maxPlayerDistance !== ''
+            ? readNumOrFallback(rawCond.maxPlayerDistance, 0)
+            : undefined,
+        preventDuplicateOnChunkReload:
+          typeof rawCond.preventDuplicateOnChunkReload === 'boolean'
+            ? rawCond.preventDuplicateOnChunkReload
+            : true,
+      },
+    };
+
+    if (rawArea) {
+      normalized.area = {
+        minX: readNumOrFallback(rawArea.minX, position.x - 16),
+        maxX: readNumOrFallback(rawArea.maxX, position.x + 16),
+        minY: readNumOrFallback(rawArea.minY, position.y),
+        maxY: readNumOrFallback(rawArea.maxY, position.y + 8),
+        minZ: readNumOrFallback(rawArea.minZ, position.z - 16),
+        maxZ: readNumOrFallback(rawArea.maxZ, position.z + 16),
+        minDistance: readNumOrFallback(rawArea.minDistance, 6),
+        maxInstances: readNumOrFallback(rawArea.maxInstances, 3),
+        deterministicSeedOffset:
+          rawArea.deterministicSeedOffset !== undefined
+            ? readNumOrFallback(rawArea.deterministicSeedOffset, 0)
+            : 0,
+      };
+    }
+
+    return normalized;
+  });
+
+  const rawBeh = obj.behavior && typeof obj.behavior === 'object'
+    ? (obj.behavior as Record<string, unknown>)
+    : undefined;
+
+  return {
+    enabled: Boolean(obj.enabled),
+    mode,
+    referenceObjectId:
+      typeof obj.referenceObjectId === 'string' ? obj.referenceObjectId : '',
+    behavior: rawBeh ? ({ ...rawBeh } as ContentSpawnBehavior) : undefined,
+    locations,
+  };
+}
+
+export function validateContentSpawnConfig(
+  spawnConfig: ContentSpawnConfig | undefined,
+  kind: WorldSpawnContentKind,
+  _expectedModId: string
+): ContentValidationIssue[] {
+  if (!spawnConfig) return [];
+  const issues: ContentValidationIssue[] = [];
+
+  if (!VALID_POSITION_MODE_SET.has(spawnConfig.mode)) {
+    issues.push({
+      field: 'spawnConfig.mode',
+      level: 'error',
+      message: t('val.spawnModeUnsupported', { mode: String(spawnConfig.mode) }),
+    });
+  }
+
+  if (spawnConfig.enabled) {
+    if (!Array.isArray(spawnConfig.locations) || spawnConfig.locations.length === 0) {
+      issues.push({
+        field: 'spawnConfig.locations',
+        level: 'error',
+        message: t('val.spawnLocationsRequired'),
+      });
+    }
+    if (
+      spawnConfig.mode === 'relative_reference' &&
+      !spawnConfig.referenceObjectId?.trim()
+    ) {
+      issues.push({
+        field: 'spawnConfig.referenceObjectId',
+        level: 'error',
+        message: t('val.spawnReferenceRequired'),
+      });
+    }
+  }
+
+  if (spawnConfig.referenceObjectId?.trim() && !NAMESPACED_ID_REGEX.test(spawnConfig.referenceObjectId.trim())) {
+    issues.push({
+      field: 'spawnConfig.referenceObjectId',
+      level: 'error',
+      message: t('val.spawnReferenceFormat', { id: spawnConfig.referenceObjectId }),
+    });
+  }
+
+  const seenIds = new Set<string>();
+  (spawnConfig.locations ?? []).forEach((loc, idx) => {
+    const prefix = `spawnConfig.locations.${idx}`;
+    const cleanSpawnId = (loc.spawnId ?? '').trim();
+    if (!cleanSpawnId) {
+      issues.push({
+        field: `${prefix}.spawnId`,
+        level: 'error',
+        message: t('val.spawnIdRequired', { index: idx + 1 }),
+      });
+    } else if (seenIds.has(cleanSpawnId)) {
+      issues.push({
+        field: `${prefix}.spawnId`,
+        level: 'error',
+        message: t('val.spawnIdDuplicate', { spawnId: cleanSpawnId }),
+      });
+    } else {
+      seenIds.add(cleanSpawnId);
+    }
+
+    if (
+      !Number.isFinite(loc.position?.x) ||
+      !Number.isFinite(loc.position?.y) ||
+      !Number.isFinite(loc.position?.z)
+    ) {
+      issues.push({
+        field: `${prefix}.position`,
+        level: 'error',
+        message: t('val.spawnCoordInvalid', { index: idx + 1 }),
+      });
+    }
+
+    if (
+      !Number.isFinite(loc.rotation?.x) ||
+      !Number.isFinite(loc.rotation?.y) ||
+      !Number.isFinite(loc.rotation?.z)
+    ) {
+      issues.push({
+        field: `${prefix}.rotation`,
+        level: 'error',
+        message: t('val.spawnRotationInvalid', { index: idx + 1 }),
+      });
+    }
+
+    if (
+      !Number.isFinite(loc.scale?.x) ||
+      !Number.isFinite(loc.scale?.y) ||
+      !Number.isFinite(loc.scale?.z) ||
+      loc.scale.x <= 0 ||
+      loc.scale.y <= 0 ||
+      loc.scale.z <= 0
+    ) {
+      issues.push({
+        field: `${prefix}.scale`,
+        level: 'error',
+        message: t('val.spawnScalePositive', { index: idx + 1 }),
+      });
+    }
+
+    if (!Number.isFinite(loc.quantity) || loc.quantity < 1) {
+      issues.push({
+        field: `${prefix}.quantity`,
+        level: 'error',
+        message: t('val.spawnQuantityMin', { index: idx + 1 }),
+      });
+    }
+
+    if (loc.conditions) {
+      if (
+        loc.conditions.onPlayerEnterArea &&
+        (!Number.isFinite(loc.conditions.enterAreaRadius) ||
+          loc.conditions.enterAreaRadius <= 0)
+      ) {
+        issues.push({
+          field: `${prefix}.conditions.enterAreaRadius`,
+          level: 'error',
+          message: t('val.spawnTriggerRadiusPos', { index: idx + 1 }),
+        });
+      }
+
+      if (
+        loc.conditions.minPlayerDistance !== undefined &&
+        (!Number.isFinite(loc.conditions.minPlayerDistance) ||
+          loc.conditions.minPlayerDistance < 0)
+      ) {
+        issues.push({
+          field: `${prefix}.conditions.minPlayerDistance`,
+          level: 'error',
+          message: t('val.spawnDistanceRange', { index: idx + 1 }),
+        });
+      }
+      if (
+        loc.conditions.maxPlayerDistance !== undefined &&
+        (!Number.isFinite(loc.conditions.maxPlayerDistance) ||
+          loc.conditions.maxPlayerDistance < 0)
+      ) {
+        issues.push({
+          field: `${prefix}.conditions.maxPlayerDistance`,
+          level: 'error',
+          message: t('val.spawnDistanceRange', { index: idx + 1 }),
+        });
+      }
+      if (
+        loc.conditions.minPlayerDistance !== undefined &&
+        loc.conditions.maxPlayerDistance !== undefined &&
+        Number.isFinite(loc.conditions.minPlayerDistance) &&
+        Number.isFinite(loc.conditions.maxPlayerDistance) &&
+        loc.conditions.minPlayerDistance > loc.conditions.maxPlayerDistance
+      ) {
+        issues.push({
+          field: `${prefix}.conditions.minPlayerDistance`,
+          level: 'error',
+          message: t('val.spawnDistanceRange', { index: idx + 1 }),
+        });
+      }
+
+      if (
+        loc.conditions.requiredQuestId?.trim() &&
+        !NAMESPACED_ID_REGEX.test(loc.conditions.requiredQuestId.trim())
+      ) {
+        issues.push({
+          field: `${prefix}.conditions.requiredQuestId`,
+          level: 'error',
+          message: t('val.questRefFormat', { id: loc.conditions.requiredQuestId }),
+        });
+      }
+
+      if (loc.conditions.biomes.some((b) => !b.trim())) {
+        issues.push({
+          field: `${prefix}.conditions.biomes`,
+          level: 'error',
+          message: t('val.spawnBiomeEmpty', { index: idx + 1 }),
+        });
+      }
+    }
+
+    if (spawnConfig.mode === 'random_area') {
+      const area = loc.area;
+      if (
+        !area ||
+        !Number.isFinite(area.minX) ||
+        !Number.isFinite(area.maxX) ||
+        !Number.isFinite(area.minY) ||
+        !Number.isFinite(area.maxY) ||
+        !Number.isFinite(area.minZ) ||
+        !Number.isFinite(area.maxZ) ||
+        area.minX > area.maxX ||
+        area.minY > area.maxY ||
+        area.minZ > area.maxZ
+      ) {
+        issues.push({
+          field: `${prefix}.area`,
+          level: 'error',
+          message: t('val.spawnAreaBoundsInvalid', { index: idx + 1 }),
+        });
+      }
+      if (!area || !Number.isFinite(area.minDistance) || area.minDistance < 0) {
+        issues.push({
+          field: `${prefix}.area.minDistance`,
+          level: 'error',
+          message: t('val.spawnAreaMinDistInvalid', { index: idx + 1 }),
+        });
+      }
+      if (!area || !Number.isFinite(area.maxInstances) || area.maxInstances < 1) {
+        issues.push({
+          field: `${prefix}.area.maxInstances`,
+          level: 'error',
+          message: t('val.spawnAreaMaxInstInvalid', { index: idx + 1 }),
+        });
+      }
+    }
+  });
+
+  if (spawnConfig.behavior) {
+    if (
+      spawnConfig.behavior.respawnDelaySeconds !== undefined &&
+      (!Number.isFinite(spawnConfig.behavior.respawnDelaySeconds) ||
+        spawnConfig.behavior.respawnDelaySeconds < 0)
+    ) {
+      issues.push({
+        field: 'spawnConfig.behavior.respawnDelaySeconds',
+        level: 'error',
+        message: t('val.respawnDelayNonNeg'),
+      });
+    }
+    if (
+      spawnConfig.behavior.maxActiveInstances !== undefined &&
+      (!Number.isFinite(spawnConfig.behavior.maxActiveInstances) ||
+        spawnConfig.behavior.maxActiveInstances < 1)
+    ) {
+      issues.push({
+        field: 'spawnConfig.behavior.maxActiveInstances',
+        level: 'error',
+        message: t('val.spawnMaxActiveMin'),
+      });
+    }
+    if (
+      (kind === 'building' || kind === 'world_object') &&
+      spawnConfig.behavior.terrainAlignment &&
+      !VALID_TERRAIN_ALIGNMENT_SET.has(spawnConfig.behavior.terrainAlignment)
+    ) {
+      issues.push({
+        field: 'spawnConfig.behavior.terrainAlignment',
+        level: 'error',
+        message: t('val.spawnTerrainAlignInvalid'),
+      });
+    }
+    if (
+      spawnConfig.behavior.footprintRadius !== undefined &&
+      (!Number.isFinite(spawnConfig.behavior.footprintRadius) ||
+        spawnConfig.behavior.footprintRadius <= 0)
+    ) {
+      issues.push({
+        field: 'spawnConfig.behavior.footprintRadius',
+        level: 'error',
+        message: t('val.spawnFootprintRadiusPos'),
+      });
+    }
+  }
+
+  return issues;
+}
+
 export function validateItem(
   item: ItemDefinition,
   expectedModId: string,
@@ -485,6 +1080,7 @@ export function validateItem(
     });
   }
 
+  issues.push(...validateContentSpawnConfig(item.spawnConfig, 'item', expectedModId));
   return issues;
 }
 
@@ -585,6 +1181,7 @@ export function validateWeapon(
     });
   }
 
+  issues.push(...validateContentSpawnConfig(weapon.spawnConfig, 'weapon', expectedModId));
   return issues;
 }
 
@@ -638,6 +1235,7 @@ export function validateArmor(
     });
   }
 
+  issues.push(...validateContentSpawnConfig(armor.spawnConfig, 'armor', expectedModId));
   return issues;
 }
 
@@ -701,6 +1299,7 @@ export function validateNpc(
     }
   });
   issues.push(...validateLootTable(npc.loot));
+  issues.push(...validateContentSpawnConfig(npc.spawnConfig, 'npc', expectedModId));
 
   return issues;
 }
@@ -765,6 +1364,7 @@ export function validateMonster(
     });
   }
   issues.push(...validateLootTable(monster.loot));
+  issues.push(...validateContentSpawnConfig(monster.spawnConfig, 'monster', expectedModId));
 
   return issues;
 }
@@ -996,6 +1596,7 @@ export function validateBuilding(
     });
   }
 
+  issues.push(...validateContentSpawnConfig(building.spawnConfig, 'building', expectedModId));
   return issues;
 }
 
@@ -1316,6 +1917,7 @@ export function validateWorldObjectConfig(
       message: t('val.worldObjPromptRequired'),
     });
   }
+  issues.push(...validateContentSpawnConfig(wo.spawnConfig, 'world_object', expectedModId));
   return issues;
 }
 
@@ -1568,6 +2170,17 @@ export function serializeContentEntryForExport<T extends WoAContentBase>(
     });
   }
 
+  if (Array.isArray(cloned.actions)) {
+    cloned.actions = cloned.actions.map((act: Record<string, unknown>) => {
+      if (typeof act?.message !== 'string' && !act?.messageTranslations) return act;
+      const msgMap = buildLocalizedExportMap(
+        typeof act.message === 'string' ? act.message : '',
+        act.messageTranslations as LocalizedTextMap | undefined
+      );
+      return msgMap ? { ...act, localized: { message: msgMap } } : act;
+    });
+  }
+
   if (Object.keys(localizedBlock).length > 0) {
     cloned.localized = localizedBlock;
   }
@@ -1678,6 +2291,16 @@ export function buildStandardRegistryJson(
   const worldMaps = contents.worldMaps ?? [];
   const proceduralRules = contents.proceduralRules ?? [];
   const visualLogicGraphs = contents.visualLogicGraphs ?? [];
+  const events = contents.events ?? [];
+
+  const spawnMeta = (cfg?: ContentSpawnConfig) =>
+    cfg?.enabled
+      ? {
+          worldSpawningEnabled: true,
+          spawnMode: cfg.mode,
+          spawnLocationsCount: cfg.locations.filter((l) => l.enabled).length,
+        }
+      : {};
 
   const allEntries = [
     ...contents.items.map((e) => ({
@@ -1686,6 +2309,7 @@ export function buildStandardRegistryJson(
       displayName: e.name,
       category: e.category,
       rarity: e.rarity,
+      ...spawnMeta(e.spawnConfig),
       dataFile: CONTENT_FILE_PATHS.item,
     })),
     ...contents.weapons.map((e) => ({
@@ -1693,6 +2317,7 @@ export function buildStandardRegistryJson(
       type: 'weapon',
       displayName: e.name,
       modelAsset: e.model,
+      ...spawnMeta(e.spawnConfig),
       dataFile: CONTENT_FILE_PATHS.weapon,
     })),
     ...contents.armor.map((e) => ({
@@ -1701,6 +2326,7 @@ export function buildStandardRegistryJson(
       displayName: e.name,
       slot: e.slot,
       modelAsset: e.model,
+      ...spawnMeta(e.spawnConfig),
       dataFile: CONTENT_FILE_PATHS.armor,
     })),
     ...contents.npcs.map((e) => ({
@@ -1709,6 +2335,7 @@ export function buildStandardRegistryJson(
       displayName: e.name,
       behaviorType: e.behaviorType,
       modelAsset: e.model,
+      ...spawnMeta(e.spawnConfig),
       dataFile: CONTENT_FILE_PATHS.npc,
     })),
     ...contents.monsters.map((e) => ({
@@ -1717,6 +2344,7 @@ export function buildStandardRegistryJson(
       displayName: e.name,
       attackBehavior: e.attackBehavior,
       modelAsset: e.model,
+      ...spawnMeta(e.spawnConfig),
       dataFile: CONTENT_FILE_PATHS.monster,
     })),
     ...contents.quests.map((e) => ({
@@ -1740,6 +2368,7 @@ export function buildStandardRegistryJson(
       displayName: e.name,
       category: e.category,
       modelAsset: e.model,
+      ...spawnMeta(e.spawnConfig),
       dataFile: CONTENT_FILE_PATHS.building,
     })),
     ...contents.spawns.map((e) => ({
@@ -1755,6 +2384,7 @@ export function buildStandardRegistryJson(
       displayName: e.name,
       objectType: e.objectType,
       modelAsset: e.model,
+      ...spawnMeta(e.spawnConfig),
       dataFile: EXTENDED_CONFIG_FILE_PATHS.world_object,
     })),
     ...lootTables.map((e) => ({
@@ -1825,6 +2455,14 @@ export function buildStandardRegistryJson(
       displayName: e.name,
       dataFile: SDK_CONFIG_FILE_PATHS.logic_graph,
     })),
+    ...events.map((e) => ({
+      id: e.id,
+      type: 'event',
+      displayName: e.name,
+      triggerType: e.trigger.type,
+      enabled: e.enabled,
+      dataFile: SDK_CONFIG_FILE_PATHS.event,
+    })),
   ];
 
   const referencedModels = new Set(
@@ -1871,6 +2509,7 @@ export function buildStandardRegistryJson(
         worldMaps: worldMaps.length,
         proceduralRules: proceduralRules.length,
         visualLogicGraphs: visualLogicGraphs.length,
+        events: events.length,
         assets: assets.length,
       },
       dataFiles: {
@@ -2027,6 +2666,28 @@ function hydrateEntriesFromJson<T extends WoAContentBase>(
         });
       }
 
+      if (Array.isArray(hydrated.actions)) {
+        hydrated.actions = hydrated.actions.map((act: Record<string, unknown>) => {
+          const locMsg = (act?.localized as { message?: LocalizedTextMap } | undefined)?.message;
+          if (!locMsg && !act?.messageTranslations) return act;
+          const mMsg = mergeLocalizedField(
+            act.message as string | undefined,
+            (act.messageTranslations as LocalizedTextMap | undefined) ?? locMsg
+          );
+          return {
+            ...act,
+            message: mMsg.value,
+            ...(mMsg.translations ? { messageTranslations: mMsg.translations } : {}),
+          };
+        });
+      }
+
+      if (hydrated.spawnConfig !== undefined) {
+        const normSpawn = normalizeContentSpawnConfig(hydrated.spawnConfig);
+        if (normSpawn) hydrated.spawnConfig = normSpawn;
+        else delete hydrated.spawnConfig;
+      }
+
       return hydrated as T;
     });
   } catch {
@@ -2088,6 +2749,9 @@ export function resolveProjectContents(project: ModProject): ModContentDatabase 
       visualLogicGraphs:
         project.contents.visualLogicGraphs ??
         hydrateEntriesFromJson<VisualLogicGraphDefinition>(byPath.get(SDK_CONFIG_FILE_PATHS.logic_graph), 'logic'),
+      events:
+        project.contents.events ??
+        hydrateEntriesFromJson<ModEventDefinition>(byPath.get(SDK_CONFIG_FILE_PATHS.event), 'event'),
     };
   }
 
@@ -2115,6 +2779,7 @@ export function resolveProjectContents(project: ModProject): ModContentDatabase 
     worldMaps: hydrateEntriesFromJson<WorldMapDefinition>(byPath.get(SDK_CONFIG_FILE_PATHS.world_map), 'wmap'),
     proceduralRules: hydrateEntriesFromJson<ProceduralRuleDefinition>(byPath.get(SDK_CONFIG_FILE_PATHS.procedural_rule), 'proc'),
     visualLogicGraphs: hydrateEntriesFromJson<VisualLogicGraphDefinition>(byPath.get(SDK_CONFIG_FILE_PATHS.logic_graph), 'logic'),
+    events: hydrateEntriesFromJson<ModEventDefinition>(byPath.get(SDK_CONFIG_FILE_PATHS.event), 'event'),
   };
 }
 
@@ -2137,6 +2802,7 @@ export function syncContentFilesInProject(
     worldMaps: contents.worldMaps ?? [],
     proceduralRules: contents.proceduralRules ?? [],
     visualLogicGraphs: contents.visualLogicGraphs ?? [],
+    events: contents.events ?? [],
   };
 
   const filePayloadMap = new Map<string, string>([
@@ -2192,6 +2858,10 @@ export function syncContentFilesInProject(
     [
       SDK_CONFIG_FILE_PATHS.logic_graph,
       serializeSdkConfigFile('logic_graph', modId, normalizedContents.visualLogicGraphs ?? []),
+    ],
+    [
+      SDK_CONFIG_FILE_PATHS.event,
+      serializeSdkConfigFile('event', modId, normalizedContents.events ?? []),
     ],
     ['data/load_order.json', serializeLoadOrderFile(project.manifest)],
     [
@@ -3556,4 +4226,12 @@ export function createDefaultVisualLogicGraph(
     ],
     updatedAt: now,
   };
+}
+
+export function createDefaultModEvent(
+  modId: string,
+  existingIds: Set<string>,
+  db?: ModContentDatabase
+): ModEventDefinition {
+  return createEventFromTemplate('starter_sword', modId, existingIds, db);
 }

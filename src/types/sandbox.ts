@@ -6,6 +6,7 @@ import {
   ItemDefinition,
   LootTableDefinition,
   ModAsset,
+  ModEventDefinition,
   ModManifest,
   MonsterDefinition,
   NpcDefinition,
@@ -64,6 +65,7 @@ export interface SandboxSnapshot {
   visualLogicGraphs?: VisualLogicGraphDefinition[];
   worldObjects?: WorldObjectDefinition[];
   proceduralRules?: ProceduralRuleDefinition[];
+  events?: ModEventDefinition[];
 }
 
 export interface SandboxEntitySummary {

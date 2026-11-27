@@ -46,11 +46,13 @@ import {
   ReferenceListEditor,
   WOA_BIOMES,
 } from '@/src/components/content/ContentFieldControls';
+import { WorldSpawnConfigSection } from '@/src/components/content/WorldSpawnConfigSection';
 import { type TranslationKey, useI18n } from '@/src/i18n';
 import {
   ARMOR_SLOTS,
   CONTENT_FILE_PATHS,
   EXTENDED_CONFIG_FILE_PATHS,
+  cloneSpawnConfig,
   collectAllContentIds,
   createDefaultAnimation,
   createDefaultArmor,
@@ -90,6 +92,7 @@ import {
   AudioConfigEntry,
   BuildingDefinition,
   ContentKind,
+  ContentSpawnConfig,
   ContentValidationIssue,
   CraftingRecipeDefinition,
   DialogueTreeDefinition,
@@ -110,6 +113,7 @@ import {
   WeaponDefinition,
   WoAContentBase,
   WorldObjectDefinition,
+  WorldSpawnContentKind,
 } from '@/src/types/mod';
 
 export type AnyWorkbenchKind = ContentKind | ExtendedConfigKind;
@@ -509,6 +513,7 @@ export const ContentEditorsWorkbench: React.FC<ContentEditorsWorkbenchProps> = (
         id: ensureUniqueId(modId, `${src.name}_copy`, allIdSet),
         name: `${src.name} ${copySuffix}`,
         translations: cloneTranslations(src.translations),
+        spawnConfig: cloneSpawnConfig(src.spawnConfig),
         updatedAt: now,
       };
       onUpdateContents({ ...contents, items: [...contents.items, clone] });
@@ -523,6 +528,7 @@ export const ContentEditorsWorkbench: React.FC<ContentEditorsWorkbenchProps> = (
         name: `${src.name} ${copySuffix}`,
         translations: cloneTranslations(src.translations),
         projectile: { ...src.projectile },
+        spawnConfig: cloneSpawnConfig(src.spawnConfig),
         updatedAt: now,
       };
       onUpdateContents({ ...contents, weapons: [...contents.weapons, clone] });
@@ -536,6 +542,7 @@ export const ContentEditorsWorkbench: React.FC<ContentEditorsWorkbenchProps> = (
         id: ensureUniqueId(modId, `${src.name}_copy`, allIdSet),
         name: `${src.name} ${copySuffix}`,
         translations: cloneTranslations(src.translations),
+        spawnConfig: cloneSpawnConfig(src.spawnConfig),
         updatedAt: now,
       };
       onUpdateContents({ ...contents, armor: [...contents.armor, clone] });
@@ -555,6 +562,7 @@ export const ContentEditorsWorkbench: React.FC<ContentEditorsWorkbenchProps> = (
         })),
         loot: src.loot.map((l) => ({ ...l })),
         questReferences: [...src.questReferences],
+        spawnConfig: cloneSpawnConfig(src.spawnConfig),
         updatedAt: now,
       };
       onUpdateContents({ ...contents, npcs: [...contents.npcs, clone] });
@@ -573,6 +581,7 @@ export const ContentEditorsWorkbench: React.FC<ContentEditorsWorkbenchProps> = (
           ...src.spawnRules,
           biomes: [...src.spawnRules.biomes],
         },
+        spawnConfig: cloneSpawnConfig(src.spawnConfig),
         updatedAt: now,
       };
       onUpdateContents({
@@ -652,6 +661,7 @@ export const ContentEditorsWorkbench: React.FC<ContentEditorsWorkbenchProps> = (
           promptTranslations: io.promptTranslations ? { ...io.promptTranslations } : undefined,
           position: { ...io.position },
         })),
+        spawnConfig: cloneSpawnConfig(src.spawnConfig),
         updatedAt: now,
       };
       onUpdateContents({
@@ -779,6 +789,7 @@ export const ContentEditorsWorkbench: React.FC<ContentEditorsWorkbenchProps> = (
         promptTranslations: src.promptTranslations ? { ...src.promptTranslations } : undefined,
         position: { ...src.position },
         rotationDeg: { ...src.rotationDeg },
+        spawnConfig: cloneSpawnConfig(src.spawnConfig),
         updatedAt: now,
       };
       onUpdateContents({
@@ -2570,6 +2581,48 @@ export const ContentEditorsWorkbench: React.FC<ContentEditorsWorkbenchProps> = (
                         issues={activeIssues}
                         onPatch={(patch) => patchWorldObject(activeEntry.uid, patch)}
                         onPreviewAssetIn3D={onPreviewAssetIn3D}
+                      />
+                    )}
+
+                    {/* WORLD SPAWNING SECTION (Supported Content Definitions) */}
+                    {(activeKind === 'item' ||
+                      activeKind === 'weapon' ||
+                      activeKind === 'armor' ||
+                      activeKind === 'npc' ||
+                      activeKind === 'monster' ||
+                      activeKind === 'building' ||
+                      activeKind === 'world_object') && (
+                      <WorldSpawnConfigSection
+                        kind={activeKind as WorldSpawnContentKind}
+                        entryId={activeEntry.id}
+                        entryName={activeEntry.name}
+                        modelPath={
+                          'model' in activeEntry && typeof activeEntry.model === 'string'
+                            ? activeEntry.model
+                            : undefined
+                        }
+                        footprint={
+                          activeKind === 'building'
+                            ? (activeEntry as BuildingDefinition).footprint
+                            : undefined
+                        }
+                        assets={assets}
+                        contents={contents}
+                        spawnConfig={
+                          'spawnConfig' in activeEntry
+                            ? (activeEntry as { spawnConfig?: ContentSpawnConfig }).spawnConfig
+                            : undefined
+                        }
+                        issues={activeIssues}
+                        onChange={(spawnConfig) => {
+                          if (activeKind === 'item') patchItem(activeEntry.uid, { spawnConfig });
+                          else if (activeKind === 'weapon') patchWeapon(activeEntry.uid, { spawnConfig });
+                          else if (activeKind === 'armor') patchArmor(activeEntry.uid, { spawnConfig });
+                          else if (activeKind === 'npc') patchNpc(activeEntry.uid, { spawnConfig });
+                          else if (activeKind === 'monster') patchMonster(activeEntry.uid, { spawnConfig });
+                          else if (activeKind === 'building') patchBuilding(activeEntry.uid, { spawnConfig });
+                          else patchWorldObject(activeEntry.uid, { spawnConfig });
+                        }}
                       />
                     )}
                   </div>

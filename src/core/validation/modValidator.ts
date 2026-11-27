@@ -47,6 +47,11 @@ import {
   validateVisualLogicGraph,
 } from '@/src/core/graphs/nodeGraphEngine';
 import {
+  collectEventReferencedContentIds,
+  detectEventChainCycles,
+  validateModEventConfig,
+} from '@/src/core/events/eventEngine';
+import {
   CURRENT_GAME_VERSION,
   CURRENT_MOD_CONTENT_SCHEMA_VERSION,
   MIN_SUPPORTED_GAME_VERSION,
@@ -2150,6 +2155,184 @@ export async function validateModProject(
     }
   });
 
+  // Cross-content World Spawning checks (unique spawnId, quest/reference IDs, missing models, overlapping structures)
+  const globalSpawnIds = new Map<string, { label: string; file: string; targetRef: string }>();
+  const placedStructures: Array<{
+    label: string;
+    file: string;
+    targetRef: string;
+    mode: string;
+    x: number;
+    y: number;
+    z: number;
+    radius: number;
+    checkOverlap: boolean;
+  }> = [];
+
+  const checkEntrySpawnCrossRefs = (
+    file: string,
+    kindLabel: string,
+    entry: {
+      uid: string;
+      id: string;
+      name: string;
+      model?: string;
+      footprint?: { width: number; height: number; depth: number };
+      scale?: number;
+      spawnConfig?: {
+        enabled: boolean;
+        mode: string;
+        referenceObjectId?: string;
+        behavior?: {
+          validateCollisionOverlap?: boolean;
+          footprintRadius?: number;
+        };
+        locations: Array<{
+          spawnId: string;
+          label: string;
+          enabled: boolean;
+          position: { x: number; y: number; z: number };
+          scale: { x: number; y: number; z: number };
+          conditions: { requiredQuestId?: string };
+        }>;
+      };
+    },
+    contentKind: string
+  ) => {
+    const sc = entry.spawnConfig;
+    if (!sc) return;
+    const label = `${entry.name || kindLabel} (${entry.id})`;
+    const ref = `${contentKind}:${entry.uid}`;
+
+    if (sc.enabled && sc.mode === 'relative_reference' && sc.referenceObjectId?.trim()) {
+      checkNamespacedReference(
+        file,
+        label,
+        'spawnConfig.referenceObjectId',
+        sc.referenceObjectId,
+        ref
+      );
+    }
+
+    if (
+      sc.enabled &&
+      (contentKind === 'monster' || contentKind === 'npc' || contentKind === 'weapon' || contentKind === 'armor' || contentKind === 'building' || contentKind === 'world_object') &&
+      !entry.model?.trim()
+    ) {
+      pushIssue('warning', 'INVALID_OBJECT_PROPERTY', 'models', {
+        file,
+        object: label,
+        property: 'model',
+        problem: t('validator.worldSpawnMissingModelProblem', { object: label }),
+        suggestion: t('validator.worldSpawnMissingModelSuggestion'),
+        targetType: 'content',
+        targetRef: ref,
+      });
+    }
+
+    sc.locations.forEach((loc, idx) => {
+      const cleanSpawnId = loc.spawnId?.trim();
+      if (cleanSpawnId) {
+        const prev = globalSpawnIds.get(cleanSpawnId);
+        if (prev && prev.targetRef !== ref) {
+          pushIssue('error', 'DUPLICATE_OBJECT_ID', 'identifiers', {
+            file,
+            object: label,
+            property: `spawnConfig.locations[${idx}].spawnId`,
+            problem: t('validator.duplicateSpawnIdProblem', {
+              spawnId: cleanSpawnId,
+              other: prev.label,
+            }),
+            suggestion: t('validator.duplicateSpawnIdSuggestion'),
+            targetType: 'content',
+            targetRef: ref,
+          });
+        } else if (!prev) {
+          globalSpawnIds.set(cleanSpawnId, { label, file, targetRef: ref });
+        }
+      }
+
+      if (loc.conditions?.requiredQuestId?.trim()) {
+        checkNamespacedReference(
+          file,
+          label,
+          `spawnConfig.locations[${idx}].conditions.requiredQuestId`,
+          loc.conditions.requiredQuestId,
+          ref
+        );
+      }
+
+      if (
+        sc.enabled &&
+        loc.enabled &&
+        (contentKind === 'building' || contentKind === 'world_object') &&
+        (sc.mode === 'absolute' || sc.mode === 'relative_world_spawn') &&
+        Number.isFinite(loc.position.x) &&
+        Number.isFinite(loc.position.y) &&
+        Number.isFinite(loc.position.z)
+      ) {
+        const horizScale = Math.max(
+          Number.isFinite(loc.scale.x) ? Math.abs(loc.scale.x) : 1,
+          Number.isFinite(loc.scale.z) ? Math.abs(loc.scale.z) : 1
+        );
+        const radius =
+          sc.behavior?.footprintRadius && sc.behavior.footprintRadius > 0
+            ? sc.behavior.footprintRadius * horizScale
+            : entry.footprint
+              ? Math.max(entry.footprint.width, entry.footprint.depth) * 0.5 * horizScale
+              : Math.max(entry.scale ?? 1, 1) * horizScale;
+
+        placedStructures.push({
+          label: `${label} (${loc.label || loc.spawnId})`,
+          file,
+          targetRef: ref,
+          mode: sc.mode,
+          x: loc.position.x,
+          y: loc.position.y,
+          z: loc.position.z,
+          radius,
+          checkOverlap: sc.behavior?.validateCollisionOverlap !== false,
+        });
+      }
+    });
+  };
+
+  contents.items.forEach((e) => checkEntrySpawnCrossRefs(CONTENT_FILE_PATHS.item, 'Item', e, 'item'));
+  contents.weapons.forEach((e) => checkEntrySpawnCrossRefs(CONTENT_FILE_PATHS.weapon, 'Weapon', e, 'weapon'));
+  contents.armor.forEach((e) => checkEntrySpawnCrossRefs(CONTENT_FILE_PATHS.armor, 'Armor', e, 'armor'));
+  contents.npcs.forEach((e) => checkEntrySpawnCrossRefs(CONTENT_FILE_PATHS.npc, 'NPC', e, 'npc'));
+  contents.monsters.forEach((e) => checkEntrySpawnCrossRefs(CONTENT_FILE_PATHS.monster, 'Monster', e, 'monster'));
+  contents.buildings.forEach((e) => checkEntrySpawnCrossRefs(CONTENT_FILE_PATHS.building, 'Building', e, 'building'));
+  (contents.worldObjects ?? []).forEach((e) =>
+    checkEntrySpawnCrossRefs(EXTENDED_CONFIG_FILE_PATHS.world_object, 'World Object', e, 'world_object')
+  );
+
+  for (let i = 0; i < placedStructures.length; i++) {
+    const a = placedStructures[i];
+    if (!a.checkOverlap) continue;
+    for (let j = i + 1; j < placedStructures.length; j++) {
+      const b = placedStructures[j];
+      if (!b.checkOverlap || a.mode !== b.mode) continue;
+      const distXZ = Math.hypot(a.x - b.x, a.z - b.z);
+      const minClearance = (a.radius + b.radius) * 0.85;
+      if (distXZ < minClearance && Math.abs(a.y - b.y) < 4) {
+        pushIssue('warning', 'INVALID_OBJECT_PROPERTY', 'properties', {
+          file: a.file,
+          object: a.label,
+          property: 'spawnConfig.locations',
+          problem: t('validator.structureOverlapProblem', {
+            first: a.label,
+            second: b.label,
+            distance: distXZ.toFixed(2),
+          }),
+          suggestion: t('validator.structureOverlapSuggestion'),
+          targetType: 'content',
+          targetRef: a.targetRef,
+        });
+      }
+    }
+  }
+
   // SDK Prefabs
   (contents.prefabs ?? []).forEach((prefab) => {
     const fieldIssues = validatePrefabConfig(prefab, manifest.modId, idIndex);
@@ -2308,6 +2491,128 @@ export async function validateModProject(
       });
     }
   });
+
+  // Events & Rewards validation (triggers, conditions, actions, cross-mod deps, circular chains, security)
+  const modEvents = contents.events ?? [];
+  const depProjectByModId = new Map(
+    allProjects
+      .filter((p) => p.manifest.modId.trim() && p.manifest.modId.trim() !== manifest.modId.trim())
+      .map((p) => [p.manifest.modId.trim(), collectAllContentIds(resolveProjectContents(p))])
+  );
+
+  modEvents.forEach((ev) => {
+    const fieldIssues = validateModEventConfig(ev, manifest.modId, idIndex);
+    const label = `${ev.name || 'Event'} (${ev.id || ev.uid})`;
+    const ref = `event:${ev.uid}`;
+
+    for (const fi of fieldIssues) {
+      const isSecurity = fi.field === 'security' || fi.message.toLowerCase().includes('script');
+      const isUnsupported = fi.message.toLowerCase().includes('not supported');
+      const isDuplicate = fi.field === 'id' && (idIndex.get(ev.id.trim())?.length ?? 0) > 1;
+      pushIssue(
+        fi.level === 'error' ? 'error' : 'warning',
+        isSecurity
+          ? 'EVENT_SCRIPT_INJECTION'
+          : isUnsupported
+            ? 'UNSUPPORTED_EVENT_FEATURE'
+            : isDuplicate
+              ? 'DUPLICATE_OBJECT_ID'
+              : 'INVALID_EVENT_DEFINITION',
+        isSecurity
+          ? 'security'
+          : isDuplicate
+            ? 'identifiers'
+            : 'logic',
+        {
+          file: SDK_CONFIG_FILE_PATHS.event,
+          object: label,
+          property: fi.field,
+          problem: fi.message,
+          suggestion: isUnsupported
+            ? 'Remove or replace unsupported multiplayer_authority checks with supported player, inventory, quest, or world conditions.'
+            : isSecurity
+              ? 'Keep Events & Rewards strictly declarative without script payloads or executable code.'
+              : suggestionForField(fi.field),
+          targetType: 'sdk',
+          targetRef: ref,
+        }
+      );
+    }
+
+    if (
+      ev.trigger.targetMode === 'mod_namespace' &&
+      ev.trigger.targetModId?.trim() &&
+      ev.trigger.targetModId.trim() !== manifest.modId.trim() &&
+      ev.trigger.targetModId.trim() !== 'woa' &&
+      !declaredDepSet.has(ev.trigger.targetModId.trim())
+    ) {
+      const ns = ev.trigger.targetModId.trim();
+      pushIssue('error', 'UNDECLARED_DEPENDENCY', 'dependencies', {
+        file: SDK_CONFIG_FILE_PATHS.event,
+        object: label,
+        property: 'trigger.targetModId',
+        problem: t('validator.undeclaredDepProblem', { ns, ref: `${ns}:*` }),
+        suggestion: t('validator.undeclaredDepSuggestion', { ns, modId: manifest.modId }),
+        targetType: 'manifest',
+      });
+    }
+
+    for (const { property, refId } of collectEventReferencedContentIds(ev)) {
+      const match = NAMESPACED_ID_REGEX.exec(refId);
+      if (!match) continue;
+      const ns = match[1];
+      if (ns === manifest.modId) {
+        if (!idIndex.has(refId)) {
+          pushIssue('warning', 'UNRESOLVED_CONTENT_REFERENCE', 'properties', {
+            file: SDK_CONFIG_FILE_PATHS.event,
+            object: label,
+            property,
+            problem: t('validator.unresolvedRefProblem', { ref: refId }),
+            suggestion: t('validator.unresolvedRefSuggestion', { ref: refId, property }),
+            targetType: 'sdk',
+            targetRef: ref,
+          });
+        }
+      } else if (ns !== 'woa' && !declaredDepSet.has(ns)) {
+        pushIssue('error', 'UNDECLARED_DEPENDENCY', 'dependencies', {
+          file: SDK_CONFIG_FILE_PATHS.event,
+          object: label,
+          property,
+          problem: t('validator.undeclaredDepProblem', { ns, ref: refId }),
+          suggestion: t('validator.undeclaredDepSuggestion', { ns, modId: manifest.modId }),
+          targetType: 'manifest',
+        });
+      } else if (ns !== 'woa' && declaredDepSet.has(ns)) {
+        const depIds = depProjectByModId.get(ns);
+        if (depIds && !depIds.has(refId)) {
+          pushIssue('warning', 'UNRESOLVED_DEPENDENCY_REFERENCE', 'dependencies', {
+            file: SDK_CONFIG_FILE_PATHS.event,
+            object: label,
+            property,
+            problem: `Referenced external ID "${refId}" was not found in loaded dependency "${ns}".`,
+            suggestion: `Verify that "${refId}" exists in "${ns}" or pick a valid target in the Events & Rewards editor.`,
+            targetType: 'sdk',
+            targetRef: ref,
+          });
+        }
+      }
+    }
+  });
+
+  const eventCycles = detectEventChainCycles(modEvents);
+  for (const cycle of eventCycles) {
+    const firstUid = cycle.eventUids[0];
+    pushIssue('error', 'CIRCULAR_EVENT_CHAIN', 'logic', {
+      file: SDK_CONFIG_FILE_PATHS.event,
+      object: cycle.cycleIds.join(' -> '),
+      property: 'actions / trigger',
+      problem: cycle.reason,
+      suggestion:
+        'Break the loop by changing the trigger or action target, or bound each linked event to once_per_player / once_per_world.',
+      targetType: firstUid ? 'sdk' : 'file',
+      targetRef: firstUid ? `event:${firstUid}` : SDK_CONFIG_FILE_PATHS.event,
+    });
+  }
 
   // Validate data/registry.json modelAsset category alignment for standalone or registry-only entries
   const registryNodeForChecks = files.find((f) => f.path === 'data/registry.json');
@@ -2656,7 +2961,8 @@ export async function validateModProject(
     (contents.aiBehaviors?.length ?? 0) +
     (contents.worldMaps?.length ?? 0) +
     (contents.proceduralRules?.length ?? 0) +
-    (contents.visualLogicGraphs?.length ?? 0);
+    (contents.visualLogicGraphs?.length ?? 0) +
+    (contents.events?.length ?? 0);
 
   return {
     id: `val_${Date.now()}`,

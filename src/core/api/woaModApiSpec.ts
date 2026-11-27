@@ -187,7 +187,7 @@ export const WOA_COMPATIBILITY_MATRIX: PackageCompatibilityRule[] = [
     supportedFiles: [
       'mod.json ($schema: woa.mod.v1) + compatibility.json',
       'All core content registries + data/characters.json + data/creatures.json',
-      'data/animations.json, data/audio.json, data/materials.json, data/loot_tables.json, data/dialogues.json, data/world_objects.json, data/load_order.json',
+      'data/animations.json, data/audio.json, data/materials.json, data/loot_tables.json, data/dialogues.json, data/world_objects.json, data/events.json, data/load_order.json',
       'localization/<locale>.json (multi-language)',
     ],
     migrationBehavior:

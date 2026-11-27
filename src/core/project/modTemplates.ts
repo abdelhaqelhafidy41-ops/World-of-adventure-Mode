@@ -962,6 +962,16 @@ export function applyTemplateToProject(
       '#EF4444',
       1890
     );
+    const captainModel = registerModelAsset(
+      `asset_${Date.now()}_sdk_npc`,
+      'Captain Soren Model',
+      'captain_soren.woa3d',
+      'beacon-pedestal',
+      'NPC',
+      '#3B4A62',
+      '#F59E0B',
+      1180
+    );
     db.items.push({
       uid: 'tpl_c_item',
       id: `${modId}:starlight_ore`,
@@ -1001,7 +1011,7 @@ export function applyTemplateToProject(
       id: `${modId}:captain_soren`,
       name: 'Captain Soren',
       description: 'Expedition commander stationed at the signal beacon.',
-      model: tower.path,
+      model: captainModel.path,
       health: 260,
       movementSpeed: 3.0,
       behaviorType: 'quest_giver',

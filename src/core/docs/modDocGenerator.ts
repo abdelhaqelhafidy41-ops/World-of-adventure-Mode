@@ -12,6 +12,7 @@ export function generateModMarkdownDocs(project: ModProject): string {
   const lootTables = contents.lootTables ?? [];
   const dialogues = contents.dialogues ?? [];
   const worldObjects = contents.worldObjects ?? [];
+  const events = contents.events ?? [];
   const locales = files
     .filter((f) => f.path.startsWith('localization/') && f.path.endsWith('.json'))
     .map((f) => f.name.replace('.json', ''));
@@ -80,6 +81,7 @@ export function generateModMarkdownDocs(project: ModProject): string {
   lines.push(`| Animations | ${animations.length} | \`data/animations.json\` |`);
   lines.push(`| Audio Cues | ${audioCues.length} | \`data/audio.json\` |`);
   lines.push(`| Materials | ${materials.length} | \`data/materials.json\` |`);
+  lines.push(`| Events & Rewards | ${events.length} | \`data/events.json\` |`);
   lines.push(`| Bundled Assets | ${assets.length} | \`assets/\` |`);
   lines.push('');
 
@@ -163,6 +165,14 @@ export function generateModMarkdownDocs(project: ModProject): string {
         detail: `World Object (${wo.objectType}) in ${wo.biome}. Prompt: "${wo.interactionPrompt}".`,
       })),
     ]
+  );
+  appendSection(
+    'Events & Rewards',
+    events.map((ev) => ({
+      id: ev.id,
+      name: ev.name,
+      detail: `${ev.enabled ? 'Enabled' : 'Disabled'} · Trigger: ${ev.trigger.type} (${ev.trigger.targetMode}), ${ev.actions.length} action(s), Scope: ${ev.execution.scope}. ${ev.description}`,
+    }))
   );
 
   if ((manifest.changelog ?? []).length > 0) {

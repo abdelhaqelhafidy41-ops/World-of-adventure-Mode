@@ -448,6 +448,16 @@ function buildLocalizationJson(
     strings[`spawn.${k}.name`] = e.name;
     strings[`spawn.${k}.description`] = e.description;
   });
+  (contents.events ?? []).forEach((e) => {
+    const k = slug(e.id, e.uid);
+    strings[`event.${k}.name`] = e.name;
+    strings[`event.${k}.description`] = e.description;
+    e.actions.forEach((act, idx) => {
+      if (act.message?.trim()) {
+        strings[`event.${k}.action.${idx}.message`] = act.message;
+      }
+    });
+  });
 
   return JSON.stringify(
     {
@@ -575,6 +585,14 @@ function buildArabicLocalizationJson(
     put(`world_object.${k}.name`, e.translations?.name?.ar);
     put(`world_object.${k}.description`, e.translations?.description?.ar);
     put(`world_object.${k}.prompt`, e.promptTranslations?.ar);
+  });
+  (contents.events ?? []).forEach((e) => {
+    const k = slug(e.id, e.uid);
+    put(`event.${k}.name`, e.translations?.name?.ar);
+    put(`event.${k}.description`, e.translations?.description?.ar);
+    e.actions.forEach((act, idx) => {
+      put(`event.${k}.action.${idx}.message`, act.messageTranslations?.ar);
+    });
   });
 
   return {
@@ -712,6 +730,7 @@ function buildRuntimeModJson(
         worldMaps: SDK_CONFIG_FILE_PATHS.world_map,
         proceduralRules: SDK_CONFIG_FILE_PATHS.procedural_rule,
         visualLogicGraphs: SDK_CONFIG_FILE_PATHS.logic_graph,
+        events: SDK_CONFIG_FILE_PATHS.event,
         loadOrder: 'data/load_order.json',
         registry: 'data/registry.json',
       },
@@ -937,6 +956,7 @@ async function runBuildPipeline(
     'data/worlds.json',
     'data/procedural.json',
     'data/logic_graphs.json',
+    'data/events.json',
     'data/load_order.json',
     'data/registry.json',
     'compatibility.json',
@@ -1115,6 +1135,12 @@ async function runBuildPipeline(
     SDK_CONFIG_FILE_PATHS.logic_graph,
     rewriteAudioRefsToSounds(
       serializeSdkConfigFile('logic_graph', project.manifest.modId, contents.visualLogicGraphs ?? [])
+    )
+  );
+  zipEntries.set(
+    SDK_CONFIG_FILE_PATHS.event,
+    rewriteAudioRefsToSounds(
+      serializeSdkConfigFile('event', project.manifest.modId, contents.events ?? [])
     )
   );
   zipEntries.set('data/load_order.json', serializeLoadOrderFile(project.manifest));

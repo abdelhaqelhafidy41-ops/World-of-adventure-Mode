@@ -8,6 +8,7 @@ import {
   FolderTree,
   GitBranch,
   History,
+  MapPin,
   Package,
   PanelLeftClose,
   PanelLeftOpen,
@@ -22,11 +23,14 @@ import {
   Undo2,
   Upload,
   XCircle,
+  Zap,
 } from 'lucide-react';
 import {
   AnyWorkbenchKind,
   ContentEditorsWorkbench,
 } from '@/src/components/content/ContentEditorsWorkbench';
+import { WorldSpawningHub } from '@/src/components/content/WorldSpawningHub';
+import { EventsRewardsWorkbench } from '@/src/components/events/EventsRewardsWorkbench';
 import { SystemsAndGraphsWorkbench } from '@/src/components/editors/SystemsAndGraphsWorkbench';
 import type { SdkSubTab } from '@/src/components/studios/SdkStudioWorkbench';
 import { AssetBrowser } from '@/src/components/panels/AssetBrowser';
@@ -119,11 +123,21 @@ interface WorkspaceViewProps {
 }
 
 type LeftTab = 'scene' | 'assets' | 'structure';
-type CenterTab = 'viewport' | 'content' | 'systems' | 'editor' | 'validation' | 'test';
+type CenterTab =
+  | 'viewport'
+  | 'content'
+  | 'spawning'
+  | 'events'
+  | 'systems'
+  | 'editor'
+  | 'validation'
+  | 'test';
 type MobilePane =
   | 'viewport'
   | 'test'
   | 'content'
+  | 'spawning'
+  | 'events'
   | 'systems'
   | 'validation'
   | 'explorer'
@@ -275,13 +289,15 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
       const tabOrder: CenterTab[] = [
         'viewport',
         'content',
+        'spawning',
+        'events',
         'systems',
         'editor',
         'validation',
         'test',
       ];
       const digit = Number(key);
-      if (digit >= 1 && digit <= 6) {
+      if (digit >= 1 && digit <= 8) {
         e.preventDefault();
         setCenterTab(tabOrder[digit - 1]);
       }
@@ -365,6 +381,10 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
     uid?: string | null;
     token: number;
   } | null>(null);
+  const [eventsFocus, setEventsFocus] = useState<{
+    uid?: string | null;
+    token: number;
+  } | null>(null);
 
   const handleInspectIssue = useCallback(
     (issue: ValidationIssue) => {
@@ -398,6 +418,12 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
       }
       if (issue.targetType === 'sdk' && issue.targetRef) {
         const [kind, uid] = issue.targetRef.split(':');
+        if (kind === 'event') {
+          setEventsFocus({ uid: uid ?? null, token: Date.now() });
+          setCenterTab('events');
+          setMobilePane('events');
+          return;
+        }
         const subTab: SdkSubTab =
           kind === 'prefab'
             ? 'prefabs'
@@ -656,6 +682,8 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
             { id: 'viewport', label: previewTabLabel, icon: <Box className="w-3.5 h-3.5" /> },
             { id: 'test', label: t('workspace.paneModTest'), icon: <Play className="w-3.5 h-3.5" /> },
             { id: 'content', label: t('workspace.paneContent'), icon: <Package className="w-3.5 h-3.5" /> },
+            { id: 'spawning', label: t('workspace.tabWorldSpawning'), icon: <MapPin className="w-3.5 h-3.5" /> },
+            { id: 'events', label: t('workspace.tabEvents'), icon: <Zap className="w-3.5 h-3.5" /> },
             { id: 'systems', label: t('workspace.paneSystems'), icon: <GitBranch className="w-3.5 h-3.5" /> },
             { id: 'validation', label: t('workspace.tabValidation'), icon: <ShieldAlert className="w-3.5 h-3.5" /> },
             { id: 'explorer', label: t('workspace.paneSceneAssets'), icon: <FolderTree className="w-3.5 h-3.5" /> },
@@ -669,12 +697,16 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
             onClick={() => {
               setMobilePane(tab.id);
               if (tab.id === 'content') setCenterTab('content');
+              else if (tab.id === 'spawning') setCenterTab('spawning');
+              else if (tab.id === 'events') setCenterTab('events');
               else if (tab.id === 'systems') setCenterTab('systems');
               else if (tab.id === 'validation') setCenterTab('validation');
               else if (tab.id === 'test') setCenterTab('test');
               else if (
                 tab.id === 'viewport' &&
                 (centerTab === 'content' ||
+                  centerTab === 'spawning' ||
+                  centerTab === 'events' ||
                   centerTab === 'systems' ||
                   centerTab === 'validation' ||
                   centerTab === 'test')
@@ -788,6 +820,8 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
             mobilePane === 'viewport' ||
             mobilePane === 'test' ||
             mobilePane === 'content' ||
+            mobilePane === 'spawning' ||
+            mobilePane === 'events' ||
             mobilePane === 'systems' ||
             mobilePane === 'validation'
               ? 'flex'
@@ -835,6 +869,30 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                 {contentValidation.totalErrors > 0 && (
                   <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
                 )}
+              </button>
+              <button
+                type="button"
+                onClick={() => setCenterTab('spawning')}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded transition-colors whitespace-nowrap shrink-0 ${
+                  centerTab === 'spawning'
+                    ? 'bg-slate-900 text-white dark:bg-white/10 dark:text-white'
+                    : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
+                }`}
+              >
+                <MapPin className="w-3.5 h-3.5" />
+                {t('workspace.tabWorldSpawning')}
+              </button>
+              <button
+                type="button"
+                onClick={() => setCenterTab('events')}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded transition-colors whitespace-nowrap shrink-0 ${
+                  centerTab === 'events'
+                    ? 'bg-slate-900 text-white dark:bg-white/10 dark:text-white'
+                    : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
+                }`}
+              >
+                <Zap className="w-3.5 h-3.5" />
+                {t('workspace.tabEvents')}
               </button>
               <button
                 type="button"
@@ -1043,6 +1101,28 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                   setCenterTab('viewport');
                   setMobilePane('viewport');
                 }}
+              />
+            ) : centerTab === 'spawning' ? (
+              <WorldSpawningHub
+                modId={project.manifest.modId}
+                contents={resolvedContents}
+                onUpdateContents={onUpdateContents}
+                onOpenEntrySpawn={(kind, uid) => {
+                  setContentKind(kind);
+                  setContentFocus({ kind, uid, token: Date.now() });
+                  setCenterTab('content');
+                  setMobilePane('content');
+                }}
+              />
+            ) : centerTab === 'events' ? (
+              <EventsRewardsWorkbench
+                modId={project.manifest.modId}
+                contents={resolvedContents}
+                manifest={project.manifest}
+                allProjects={allProjects}
+                focusTarget={eventsFocus}
+                onUpdateContents={onUpdateContents}
+                onUpdateManifest={onUpdateManifest}
               />
             ) : centerTab === 'systems' ? (
               <SystemsAndGraphsWorkbench

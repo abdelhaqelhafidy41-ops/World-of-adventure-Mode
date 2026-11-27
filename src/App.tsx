@@ -30,6 +30,7 @@ import {
   SDK_CONFIG_FILE_PATHS,
   syncContentFilesInProject,
 } from '@/src/core/content/contentRegistry';
+import { remapEventContentIds } from '@/src/core/events/eventEngine';
 import {
   buildModProjectAsync,
   exportWorkspaceProjectZip,
@@ -64,6 +65,7 @@ import {
   BuildHistoryEntry,
   BuildReport,
   ConsoleEntry,
+  ContentSpawnConfig,
   CreateModInput,
   EditorSettings,
   LogLevel,
@@ -483,9 +485,31 @@ export default function App() {
     const newPrefix = `${copyId}:`;
     const remapId = (id: string) =>
       id.startsWith(oldPrefix) ? `${newPrefix}${id.slice(oldPrefix.length)}` : id;
+    const remapSpawn = (sc?: ContentSpawnConfig): ContentSpawnConfig | undefined =>
+      sc
+        ? {
+            ...sc,
+            referenceObjectId: sc.referenceObjectId ? remapId(sc.referenceObjectId) : sc.referenceObjectId,
+            behavior: sc.behavior ? { ...sc.behavior } : undefined,
+            locations: sc.locations.map((loc) => ({
+              ...loc,
+              position: { ...loc.position },
+              rotation: { ...loc.rotation },
+              scale: { ...loc.scale },
+              area: loc.area ? { ...loc.area } : undefined,
+              conditions: {
+                ...loc.conditions,
+                biomes: [...loc.conditions.biomes],
+                requiredQuestId: loc.conditions.requiredQuestId
+                  ? remapId(loc.conditions.requiredQuestId)
+                  : loc.conditions.requiredQuestId,
+              },
+            })),
+          }
+        : undefined;
 
     const clonedContents: ModContentDatabase = {
-      items: sourceContents.items.map((e) => ({ ...e, id: remapId(e.id) })),
+      items: sourceContents.items.map((e) => ({ ...e, id: remapId(e.id), spawnConfig: remapSpawn(e.spawnConfig) })),
       weapons: sourceContents.weapons.map((e) => ({
         ...e,
         id: remapId(e.id),
@@ -493,18 +517,21 @@ export default function App() {
           ...e.projectile,
           projectileId: remapId(e.projectile.projectileId),
         },
+        spawnConfig: remapSpawn(e.spawnConfig),
       })),
-      armor: sourceContents.armor.map((e) => ({ ...e, id: remapId(e.id) })),
+      armor: sourceContents.armor.map((e) => ({ ...e, id: remapId(e.id), spawnConfig: remapSpawn(e.spawnConfig) })),
       npcs: sourceContents.npcs.map((e) => ({
         ...e,
         id: remapId(e.id),
         loot: e.loot.map((l) => ({ ...l, itemId: remapId(l.itemId) })),
         questReferences: e.questReferences.map(remapId),
+        spawnConfig: remapSpawn(e.spawnConfig),
       })),
       monsters: sourceContents.monsters.map((e) => ({
         ...e,
         id: remapId(e.id),
         loot: e.loot.map((l) => ({ ...l, itemId: remapId(l.itemId) })),
+        spawnConfig: remapSpawn(e.spawnConfig),
       })),
       quests: sourceContents.quests.map((e) => ({
         ...e,
@@ -536,6 +563,7 @@ export default function App() {
           ...io,
           targetId: remapId(io.targetId),
         })),
+        spawnConfig: remapSpawn(e.spawnConfig),
       })),
       spawns: sourceContents.spawns.map((e) => ({
         ...e,
@@ -582,6 +610,7 @@ export default function App() {
         audioCueId: remapId(e.audioCueId),
         lootTableId: remapId(e.lootTableId),
         questId: remapId(e.questId),
+        spawnConfig: remapSpawn(e.spawnConfig),
       })),
       prefabs: (sourceContents.prefabs ?? []).map((p) => ({
         ...p,
@@ -624,6 +653,9 @@ export default function App() {
         id: remapId(g.id),
         triggerEvent: remapId(g.triggerEvent),
       })),
+      events: (sourceContents.events ?? []).map((ev) =>
+        remapEventContentIds(ev, oldPrefix, newPrefix)
+      ),
     };
 
     const rawCopy: ModProject = {
@@ -699,9 +731,31 @@ export default function App() {
       const newPrefix = `${trimmedModId}:`;
       const remapId = (id: string) =>
         id.startsWith(oldPrefix) ? `${newPrefix}${id.slice(oldPrefix.length)}` : id;
+      const remapSpawn = (sc?: ContentSpawnConfig): ContentSpawnConfig | undefined =>
+        sc
+          ? {
+              ...sc,
+              referenceObjectId: sc.referenceObjectId ? remapId(sc.referenceObjectId) : sc.referenceObjectId,
+              behavior: sc.behavior ? { ...sc.behavior } : undefined,
+              locations: sc.locations.map((loc) => ({
+                ...loc,
+                position: { ...loc.position },
+                rotation: { ...loc.rotation },
+                scale: { ...loc.scale },
+                area: loc.area ? { ...loc.area } : undefined,
+                conditions: {
+                  ...loc.conditions,
+                  biomes: [...loc.conditions.biomes],
+                  requiredQuestId: loc.conditions.requiredQuestId
+                    ? remapId(loc.conditions.requiredQuestId)
+                    : loc.conditions.requiredQuestId,
+                },
+              })),
+            }
+          : undefined;
 
       updatedContents = {
-        items: updatedContents.items.map((e) => ({ ...e, id: remapId(e.id) })),
+        items: updatedContents.items.map((e) => ({ ...e, id: remapId(e.id), spawnConfig: remapSpawn(e.spawnConfig) })),
         weapons: updatedContents.weapons.map((e) => ({
           ...e,
           id: remapId(e.id),
@@ -709,18 +763,21 @@ export default function App() {
             ...e.projectile,
             projectileId: remapId(e.projectile.projectileId),
           },
+          spawnConfig: remapSpawn(e.spawnConfig),
         })),
-        armor: updatedContents.armor.map((e) => ({ ...e, id: remapId(e.id) })),
+        armor: updatedContents.armor.map((e) => ({ ...e, id: remapId(e.id), spawnConfig: remapSpawn(e.spawnConfig) })),
         npcs: updatedContents.npcs.map((e) => ({
           ...e,
           id: remapId(e.id),
           loot: e.loot.map((l) => ({ ...l, itemId: remapId(l.itemId) })),
           questReferences: e.questReferences.map(remapId),
+          spawnConfig: remapSpawn(e.spawnConfig),
         })),
         monsters: updatedContents.monsters.map((e) => ({
           ...e,
           id: remapId(e.id),
           loot: e.loot.map((l) => ({ ...l, itemId: remapId(l.itemId) })),
+          spawnConfig: remapSpawn(e.spawnConfig),
         })),
         quests: updatedContents.quests.map((e) => ({
           ...e,
@@ -752,6 +809,7 @@ export default function App() {
             ...io,
             targetId: remapId(io.targetId),
           })),
+          spawnConfig: remapSpawn(e.spawnConfig),
         })),
         spawns: updatedContents.spawns.map((e) => ({
           ...e,
@@ -796,6 +854,7 @@ export default function App() {
           audioCueId: remapId(e.audioCueId),
           lootTableId: remapId(e.lootTableId),
           questId: remapId(e.questId),
+          spawnConfig: remapSpawn(e.spawnConfig),
         })),
         prefabs: (updatedContents.prefabs ?? []).map((p) => ({
           ...p,
@@ -838,6 +897,9 @@ export default function App() {
           id: remapId(g.id),
           triggerEvent: remapId(g.triggerEvent),
         })),
+        events: (updatedContents.events ?? []).map((ev) =>
+          remapEventContentIds(ev, oldPrefix, newPrefix)
+        ),
       };
     }
 

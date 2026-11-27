@@ -116,6 +116,94 @@ export interface WoAContentBase {
   updatedAt: string;
 }
 
+export type SpawnPositionMode =
+  | 'absolute'
+  | 'relative_world_spawn'
+  | 'relative_reference'
+  | 'random_area';
+
+export type SpawnTerrainAlignment = 'exact_y' | 'conform_terrain' | 'flatten';
+export type SpawnNpcBehaviorMode = 'stationary' | 'patrol';
+export type WorldSpawnContentKind =
+  | 'item'
+  | 'weapon'
+  | 'armor'
+  | 'npc'
+  | 'monster'
+  | 'building'
+  | 'world_object';
+
+export interface SpawnVec3 {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export interface SpawnLocationArea {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+  minZ: number;
+  maxZ: number;
+  minDistance: number;
+  maxInstances: number;
+  deterministicSeedOffset?: number;
+}
+
+export interface SpawnLocationConditions {
+  onNewWorld: boolean;
+  onWorldLoadIfUnspawned: boolean;
+  onChunkLoad: boolean;
+  onPlayerEnterArea: boolean;
+  enterAreaRadius: number;
+  timeOfDay: SpawnTimeOfDay;
+  weather: WeatherCondition;
+  biomes: string[];
+  regionOrDimension?: string;
+  requiredQuestId?: string;
+  worldCondition?: string;
+  minPlayerDistance?: number;
+  maxPlayerDistance?: number;
+  preventDuplicateOnChunkReload: boolean;
+}
+
+export interface ContentSpawnLocation {
+  spawnId: string;
+  label: string;
+  enabled: boolean;
+  quantity: number;
+  position: SpawnVec3;
+  rotation: SpawnVec3;
+  scale: SpawnVec3;
+  area?: SpawnLocationArea;
+  conditions: SpawnLocationConditions;
+}
+
+export interface ContentSpawnBehavior {
+  npcBehavior?: SpawnNpcBehaviorMode;
+  uniquePersistent?: boolean;
+  dialogueAvailable?: boolean;
+  maxActiveInstances?: number;
+  respawnEnabled?: boolean;
+  respawnDelaySeconds?: number;
+  groupBehavior?: 'solo' | 'pack' | 'territorial';
+  pickupAvailable?: boolean;
+  visualFloat?: boolean;
+  visualRotate?: boolean;
+  terrainAlignment?: SpawnTerrainAlignment;
+  validateCollisionOverlap?: boolean;
+  footprintRadius?: number;
+}
+
+export interface ContentSpawnConfig {
+  enabled: boolean;
+  mode: SpawnPositionMode;
+  referenceObjectId?: string;
+  behavior?: ContentSpawnBehavior;
+  locations: ContentSpawnLocation[];
+}
+
 export interface ItemDefinition extends WoAContentBase {
   icon: string;
   stackSize: number;
@@ -123,6 +211,7 @@ export interface ItemDefinition extends WoAContentBase {
   value: number;
   rarity: ItemRarity;
   category: ItemCategory;
+  spawnConfig?: ContentSpawnConfig;
 }
 
 export interface WeaponChargeAttackConfig {
@@ -150,6 +239,7 @@ export interface WeaponDefinition extends WoAContentBase {
   reloadSeconds?: number;
   ammoItemId?: string;
   chargeAttack?: WeaponChargeAttackConfig;
+  spawnConfig?: ContentSpawnConfig;
 }
 
 export interface ArmorDefinition extends WoAContentBase {
@@ -159,6 +249,7 @@ export interface ArmorDefinition extends WoAContentBase {
   slot: ArmorSlot;
   model: string;
   icon: string;
+  spawnConfig?: ContentSpawnConfig;
 }
 
 export interface NpcDefinition extends WoAContentBase {
@@ -172,6 +263,7 @@ export interface NpcDefinition extends WoAContentBase {
   questReferences: string[];
   aiBehaviorGraphId?: string;
   dialogueTreeId?: string;
+  spawnConfig?: ContentSpawnConfig;
 }
 
 export interface MonsterSpecialAbility {
@@ -198,6 +290,7 @@ export interface MonsterDefinition extends WoAContentBase {
   fleeHealthPercent?: number;
   lootTableId?: string;
   abilities?: MonsterSpecialAbility[];
+  spawnConfig?: ContentSpawnConfig;
 }
 
 // ============================================================================
@@ -376,6 +469,7 @@ export interface BuildingDefinition extends WoAContentBase {
   windows: BuildingWindowEntry[];
   interactiveObjects: BuildingInteractiveObject[];
   linkedPrefabId?: string;
+  spawnConfig?: ContentSpawnConfig;
 }
 
 export type WeatherCondition = 'any' | 'clear' | 'rain' | 'storm';
@@ -430,7 +524,8 @@ export type SdkConfigKind =
   | 'ai_behavior'
   | 'world_map'
   | 'procedural_rule'
-  | 'logic_graph';
+  | 'logic_graph'
+  | 'event';
 
 export type AnimationTargetType = 'weapon' | 'character' | 'npc' | 'creature' | 'prop';
 
@@ -587,6 +682,7 @@ export interface WorldObjectDefinition extends WoAContentBase {
   interactionPrompt: string;
   promptTranslations?: LocalizedTextMap;
   respawnSeconds: number;
+  spawnConfig?: ContentSpawnConfig;
 }
 
 // ============================================================================
@@ -791,6 +887,229 @@ export interface VisualLogicGraphDefinition extends WoAContentBase {
   edges: VisualLogicEdge[];
 }
 
+// ============================================================================
+// EVENTS, TRIGGERS, CONDITIONS & REWARDS SYSTEM
+// ============================================================================
+
+export type EventRuntimeSupportLevel =
+  | 'sandbox_and_game'
+  | 'game_runtime_dependent'
+  | 'unsupported';
+
+export type EventTriggerCategory =
+  | 'world_player'
+  | 'npc_dialogue'
+  | 'combat'
+  | 'destruction_gathering'
+  | 'quest_crafting';
+
+export type EventTriggerType =
+  // A. World and Player Events
+  | 'on_new_world_created'
+  | 'on_player_first_spawn'
+  | 'on_player_respawn'
+  | 'on_world_loaded'
+  | 'on_player_enter_area'
+  | 'on_player_reach_coordinates'
+  | 'on_player_level_reached'
+  | 'on_player_item_collected'
+  | 'on_player_inventory_changed'
+  | 'on_player_item_equipped'
+  // B. NPC and Dialogue Events
+  | 'on_npc_talk'
+  | 'on_dialogue_started'
+  | 'on_dialogue_completed'
+  | 'on_dialogue_choice_selected'
+  | 'on_npc_interaction'
+  | 'on_npc_quest_completed'
+  | 'on_npc_reputation_changed'
+  // C. Combat Events
+  | 'on_animal_killed'
+  | 'on_monster_killed'
+  | 'on_enemy_killed'
+  | 'on_boss_killed'
+  | 'on_player_damaged'
+  | 'on_entity_killed'
+  | 'on_entity_killed_by_weapon'
+  | 'on_player_combat_victory'
+  // D. World Destruction & Gathering Events
+  | 'on_block_broken'
+  | 'on_object_destroyed'
+  | 'on_resource_gathered'
+  | 'on_tree_chopped'
+  | 'on_ore_mined'
+  | 'on_container_destroyed'
+  | 'on_structure_destroyed'
+  | 'on_item_dropped'
+  // E. Quest & Crafting Events
+  | 'on_quest_started'
+  | 'on_quest_completed'
+  | 'on_quest_failed'
+  | 'on_item_crafted'
+  | 'on_recipe_completed'
+  | 'on_building_placed'
+  | 'on_structure_completed';
+
+export type EventTargetMode =
+  | 'any'
+  | 'specific_id'
+  | 'category'
+  | 'mod_namespace'
+  | 'area'
+  | 'coordinates'
+  | 'threshold';
+
+export interface ModEventTriggerArea {
+  x: number;
+  y: number;
+  z: number;
+  radius: number;
+  label?: string;
+}
+
+export interface ModEventTriggerConfig {
+  type: EventTriggerType;
+  targetMode: EventTargetMode;
+  targetId?: string;
+  secondaryTargetId?: string;
+  targetCategory?: string;
+  targetModId?: string;
+  area?: ModEventTriggerArea;
+  threshold?: number;
+}
+
+export type EventConditionField =
+  | 'player_level'
+  | 'player_has_item'
+  | 'player_missing_item'
+  | 'npc_id'
+  | 'entity_id'
+  | 'entity_category'
+  | 'weapon_used'
+  | 'biome'
+  | 'world_coordinates'
+  | 'time_of_day'
+  | 'weather'
+  | 'quest_state'
+  | 'world_flag'
+  | 'player_health_percent'
+  | 'multiplayer_authority';
+
+export type EventConditionOperator =
+  | '=='
+  | '!='
+  | '>'
+  | '>='
+  | '<'
+  | '<='
+  | 'contains'
+  | 'in_radius';
+
+export interface ModEventConditionRule {
+  id: string;
+  field: EventConditionField;
+  operator: EventConditionOperator;
+  targetId?: string;
+  value: string | number | boolean;
+  area?: ModEventTriggerArea;
+}
+
+export interface ModEventConditionGroup {
+  id: string;
+  logic: 'and' | 'or';
+  rules: ModEventConditionRule[];
+}
+
+export type EventActionType =
+  // Item & Weapon Rewards
+  | 'give_item'
+  | 'give_weapon'
+  | 'give_multiple_items'
+  | 'add_to_inventory'
+  | 'drop_reward_in_world'
+  | 'equip_reward'
+  // Progression, World & Feedback Actions
+  | 'give_xp'
+  | 'give_currency'
+  | 'give_reputation'
+  | 'unlock_achievement'
+  | 'unlock_recipe'
+  | 'start_quest'
+  | 'complete_quest'
+  | 'set_world_flag'
+  | 'show_notification'
+  | 'play_sound'
+  | 'spawn_entity'
+  | 'spawn_pickup_item'
+  | 'start_dialogue'
+  | 'apply_status_effect';
+
+export interface ModEventRewardBundleItem {
+  id: string;
+  itemId: string;
+  quantity: number;
+  durability?: number;
+}
+
+export interface ModEventAction {
+  id: string;
+  type: EventActionType;
+  targetId?: string;
+  secondaryTargetId?: string;
+  quantity?: number;
+  durability?: number;
+  amount?: number;
+  equipAutomatically?: boolean;
+  flagValue?: string | number | boolean;
+  message?: string;
+  messageTranslations?: LocalizedTextMap;
+  position?: SpawnVec3;
+  bundleItems?: ModEventRewardBundleItem[];
+  statusEffect?: 'bleed' | 'burn' | 'frost' | 'stun' | 'knockback' | 'regeneration' | 'haste' | 'shield';
+  durationSeconds?: number;
+}
+
+export type EventExecutionScope =
+  | 'once_per_world'
+  | 'once_per_player'
+  | 'once_per_player_per_world'
+  | 'once_per_event_trigger'
+  | 'repeatable'
+  | 'repeatable_cooldown';
+
+export type EventResetBehavior =
+  | 'never'
+  | 'on_world_reset'
+  | 'on_player_respawn'
+  | 'on_quest_reset'
+  | 'manual';
+
+export interface ModEventExecutionConfig {
+  scope: EventExecutionScope;
+  maxExecutions?: number | null;
+  cooldownSeconds: number;
+  persistentState: boolean;
+  resetBehavior: EventResetBehavior;
+}
+
+export type EventTemplatePresetId =
+  | 'starter_sword'
+  | 'npc_reward'
+  | 'monster_loot'
+  | 'animal_loot'
+  | 'destruction_reward';
+
+export interface ModEventDefinition extends WoAContentBase {
+  enabled: boolean;
+  category?: EventTriggerCategory;
+  templatePreset?: EventTemplatePresetId;
+  trigger: ModEventTriggerConfig;
+  conditionCombinator: 'and' | 'or';
+  conditionGroups: ModEventConditionGroup[];
+  actions: ModEventAction[];
+  execution: ModEventExecutionConfig;
+}
+
 export interface ModContentDatabase {
   items: ItemDefinition[];
   weapons: WeaponDefinition[];
@@ -812,6 +1131,7 @@ export interface ModContentDatabase {
   worldMaps?: WorldMapDefinition[];
   proceduralRules?: ProceduralRuleDefinition[];
   visualLogicGraphs?: VisualLogicGraphDefinition[];
+  events?: ModEventDefinition[];
 }
 
 export interface ContentValidationIssue {

@@ -24,14 +24,24 @@ import {
   Users,
   Volume2,
   VolumeX,
+  Zap,
 } from 'lucide-react';
 import { SandboxAudioEngine } from '@/src/core/audio/sandboxAudio';
 import { resolveProjectContents } from '@/src/core/content/contentRegistry';
+import { EVENT_TRIGGER_CATALOG } from '@/src/core/events/eventCatalog';
+import {
+  createDefaultEventSimState,
+  dispatchSandboxEvent,
+  resetSandboxEventStates,
+  type SandboxDispatchedTrigger,
+  type SandboxEventSimState,
+} from '@/src/core/events/eventEngine';
 import { ModTestEngine } from '@/src/core/three/ModTestEngine';
 import { useI18n } from '@/src/i18n';
 import { usePlatform } from '@/src/platform';
 import {
   EditorSettings,
+  EventTriggerType,
   LogLevel,
   ModProject,
   NpcDefinition,
@@ -67,11 +77,12 @@ function createIsolatedSnapshot(project: ModProject): SandboxSnapshot {
     npcs: resolved.npcs,
     monsters: resolved.monsters,
     buildings: resolved.buildings,
+    events: resolved.events ?? [],
     entryScriptContent: entryScript,
   });
 }
 
-type DockTab = 'controls' | 'animation' | 'audio' | 'entities';
+type DockTab = 'controls' | 'events' | 'animation' | 'audio' | 'entities';
 
 export const ModTestSandbox: React.FC<ModTestSandboxProps> = ({
   project,
@@ -131,6 +142,15 @@ export const ModTestSandbox: React.FC<ModTestSandboxProps> = ({
   const [runtimeErrorsCount, setRuntimeErrorsCount] = useState(0);
   const [lastCombatFeedback, setLastCombatFeedback] = useState<string | null>(null);
   const [selectedAudioRef, setSelectedAudioRef] = useState<string>('');
+  const [eventSimState, setEventSimState] = useState<SandboxEventSimState>(() =>
+    createDefaultEventSimState()
+  );
+  const eventSimRef = useRef(eventSimState);
+  eventSimRef.current = eventSimState;
+  const equippedWeaponRef = useRef(equippedWeaponId);
+  equippedWeaponRef.current = equippedWeaponId;
+  const [manualTriggerType, setManualTriggerType] = useState<EventTriggerType>('on_npc_talk');
+  const [manualTargetId, setManualTargetId] = useState<string>('');
 
   const modeTabs: {
     id: SandboxPreviewMode;
@@ -219,6 +239,67 @@ export const ModTestSandbox: React.FC<ModTestSandboxProps> = ({
     }
   }, []);
 
+  const fireSandboxEvent = useCallback((trigger: SandboxDispatchedTrigger) => {
+    const snap = snapshotRef.current;
+    const eventsList = snap.events ?? [];
+    if (eventsList.length === 0) return;
+
+    const { nextState, outcomes } = dispatchSandboxEvent(
+      eventsList,
+      eventSimRef.current,
+      { ...trigger, locale: langRef.current },
+      {
+        items: snap.items,
+        weapons: snap.weapons,
+        armor: snap.armor,
+        npcs: snap.npcs,
+        monsters: snap.monsters,
+        quests: [],
+        recipes: [],
+        buildings: snap.buildings,
+        spawns: [],
+      }
+    );
+
+    eventSimRef.current = nextState;
+    setEventSimState(nextState);
+
+    if (nextState.equippedWeaponId && nextState.equippedWeaponId !== equippedWeaponRef.current) {
+      setEquippedWeaponId(nextState.equippedWeaponId);
+    }
+
+    const grantedIds = Object.entries(nextState.inventory).flatMap(([id, qty]) =>
+      Array.from({ length: Math.max(0, qty) }, () => id)
+    );
+    if (grantedIds.length > 0) {
+      setBagItemIds((prev) => {
+        const merged = [...prev];
+        for (const id of Object.keys(nextState.inventory)) {
+          if (!merged.includes(id)) merged.push(id);
+        }
+        return merged;
+      });
+    }
+
+    for (const out of outcomes) {
+      if (out.status === 'executed') {
+        const msg =
+          nextState.notifications[nextState.notifications.length - 1] ||
+          out.rewardsSummary.join(', ') ||
+          out.detail;
+        setLastCombatFeedback(msg);
+        onLogRef.current(
+          'success',
+          'Events & Rewards',
+          `${out.eventId}: ${out.rewardsSummary.join(', ') || out.detail}`
+        );
+      } else if (out.status === 'rejected_unsupported') {
+        setRuntimeErrorsCount((c) => c + 1);
+        onLogRef.current('error', 'Events & Rewards', `${out.eventId}: ${out.detail}`);
+      }
+    }
+  }, []);
+
   const handleNpcDialogue = useCallback(
     (npc: NpcDefinition) => {
       const speaker = getEntityDisplayName(npc);
@@ -244,8 +325,20 @@ export const ModTestSandbox: React.FC<ModTestSandboxProps> = ({
         'Sandbox Test',
         tRef.current('sandbox.talkedNpcLog', { name: speaker })
       );
+      fireSandboxEvent({
+        type: 'on_npc_talk',
+        targetId: npc.id,
+        targetCategory: 'npc',
+        triggerInstanceId: npc.id,
+      });
+      fireSandboxEvent({
+        type: 'on_npc_interaction',
+        targetId: npc.id,
+        targetCategory: 'npc',
+        triggerInstanceId: npc.id,
+      });
     },
-    [getEntityDisplayName]
+    [getEntityDisplayName, fireSandboxEvent]
   );
 
   // Initialize Three.js Sandbox Engine & Web Audio Engine once
@@ -281,6 +374,16 @@ export const ModTestSandbox: React.FC<ModTestSandboxProps> = ({
           'Sandbox Test',
           tRef.current('sandbox.pickedUpLog', { name, id: item.id })
         );
+        fireSandboxEvent({
+          type: 'on_player_item_collected',
+          targetId: item.id,
+          targetCategory: item.category,
+          triggerInstanceId: `${item.id}_${Date.now()}`,
+        });
+        fireSandboxEvent({
+          type: 'on_player_inventory_changed',
+          targetId: item.id,
+        });
       },
       onBuildingDoorToggled: (building, doorId, open) => {
         const buildingName = getEntityDisplayName(building);
@@ -306,6 +409,11 @@ export const ModTestSandbox: React.FC<ModTestSandboxProps> = ({
             building: getEntityDisplayName(building),
           })
         );
+        fireSandboxEvent({
+          type: 'on_object_destroyed',
+          targetId: building.id,
+          targetCategory: building.category,
+        });
       },
       onCreatureHit: (creature, damage, isCrit, remainingHp) => {
         setLastCombatFeedback(
@@ -328,6 +436,29 @@ export const ModTestSandbox: React.FC<ModTestSandboxProps> = ({
             count: creature.loot.length,
           })
         );
+        const isAnimal =
+          /wolf|deer|boar|stag|bear|fox|rabbit|animal/i.test(creature.name);
+        fireSandboxEvent({
+          type: isAnimal ? 'on_animal_killed' : 'on_monster_killed',
+          targetId: creature.id,
+          targetCategory: isAnimal ? 'animal' : 'monster',
+          weaponUsedId: equippedWeaponRef.current || undefined,
+          triggerInstanceId: `${creature.id}_${Date.now()}`,
+        });
+        fireSandboxEvent({
+          type: 'on_entity_killed',
+          targetId: creature.id,
+          targetCategory: isAnimal ? 'animal' : 'monster',
+          weaponUsedId: equippedWeaponRef.current || undefined,
+        });
+        if (equippedWeaponRef.current) {
+          fireSandboxEvent({
+            type: 'on_entity_killed_by_weapon',
+            targetId: creature.id,
+            secondaryTargetId: equippedWeaponRef.current,
+            weaponUsedId: equippedWeaponRef.current,
+          });
+        }
       },
       onPlayerDamaged: (damage, sourceName, playerHp) => {
         setLastCombatFeedback(
@@ -337,6 +468,10 @@ export const ModTestSandbox: React.FC<ModTestSandboxProps> = ({
             hp: playerHp,
           })
         );
+        fireSandboxEvent({
+          type: 'on_player_damaged',
+          targetCategory: 'creature',
+        });
       },
       onGltfClipsDetected: (clips) => {
         setGltfClips(clips);
@@ -360,7 +495,7 @@ export const ModTestSandbox: React.FC<ModTestSandboxProps> = ({
       audio.dispose();
       audioRef.current = null;
     };
-  }, [handleNpcDialogue, playSoundSafely, getEntityDisplayName]);
+  }, [handleNpcDialogue, playSoundSafely, getEntityDisplayName, fireSandboxEvent]);
 
   // Sync theme, lowPowerMode, collision, camera, animation, held keys
   useEffect(() => {
@@ -514,10 +649,15 @@ export const ModTestSandbox: React.FC<ModTestSandboxProps> = ({
 
   const handlePlayTest = () => {
     const fresh = createIsolatedSnapshot(project);
+    snapshotRef.current = fresh;
     setSnapshot(fresh);
     setDialogue(null);
     setLastCombatFeedback(null);
     setRuntimeErrorsCount(0);
+
+    const freshSim = createDefaultEventSimState();
+    eventSimRef.current = freshSim;
+    setEventSimState(freshSim);
 
     const modDisplayName =
       (fresh.manifest.translations?.name?.[language] ?? '').trim() ||
@@ -526,6 +666,11 @@ export const ModTestSandbox: React.FC<ModTestSandboxProps> = ({
     const errCount = runRuntimePrecheck(fresh);
     setRunState('playing');
     engineRef.current?.setRunState('playing');
+
+    fireSandboxEvent({ type: 'on_new_world_created' });
+    fireSandboxEvent({ type: 'on_world_loaded' });
+    fireSandboxEvent({ type: 'on_player_first_spawn' });
+
     onLog(
       errCount > 0 ? 'warn' : 'success',
       'Sandbox Test',
@@ -552,9 +697,13 @@ export const ModTestSandbox: React.FC<ModTestSandboxProps> = ({
       (fresh.manifest.translations?.name?.[language] ?? '').trim() ||
       fresh.manifest.name;
 
+    snapshotRef.current = fresh;
     setSnapshot(fresh);
     setEquippedWeaponId(fresh.weapons[0]?.id ?? '');
     setBagItemIds([]);
+    const resetSim = createDefaultEventSimState();
+    eventSimRef.current = resetSim;
+    setEventSimState(resetSim);
     setDialogue(null);
     setDialogueCursorByNpc({});
     setCollidingWith(null);
@@ -839,6 +988,12 @@ export const ModTestSandbox: React.FC<ModTestSandboxProps> = ({
                   {(
                     [
                       { id: 'controls', label: t('sandbox.dockControls') },
+                      {
+                        id: 'events',
+                        label: t('sandbox.dockEvents', {
+                          count: (snapshot.events ?? []).filter((e) => e.enabled).length,
+                        }),
+                      },
                       { id: 'animation', label: t('sandbox.dockAnimations') },
                       { id: 'audio', label: t('sandbox.dockAudio', { count: audioAssets.length }) },
                       { id: 'entities', label: t('sandbox.dockSpawned', { count: entities.length }) },
@@ -1030,6 +1185,139 @@ export const ModTestSandbox: React.FC<ModTestSandboxProps> = ({
                             : t('sandbox.cameraFree'),
                         })}
                       </button>
+                    </div>
+                  </div>
+                )}
+
+                {dockTab === 'events' && (
+                  <div className="space-y-2.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-300 tabular-nums">
+                        <span>
+                          XP: <strong className="font-mono text-white">{eventSimState.xp}</strong>
+                        </span>
+                        <span>
+                          Gold: <strong className="font-mono text-amber-400">{eventSimState.currency}</strong>
+                        </span>
+                        <span>
+                          Inv:{' '}
+                          <strong className="font-mono text-emerald-400">
+                            {Object.values(eventSimState.inventory).reduce((s, q) => s + q, 0)}
+                          </strong>
+                        </span>
+                        <span>
+                          Quests:{' '}
+                          <strong className="font-mono text-sky-400">
+                            {Object.keys(eventSimState.quests).length}
+                          </strong>
+                        </span>
+                        <span>
+                          t=<strong className="font-mono">{eventSimState.nowSeconds}s</strong>
+                        </span>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <select
+                          value={manualTriggerType}
+                          onChange={(e) => setManualTriggerType(e.target.value as EventTriggerType)}
+                          className="px-2 py-1 text-[11px] rounded border border-white/15 bg-[#121823] text-slate-100"
+                        >
+                          {EVENT_TRIGGER_CATALOG.map((td) => (
+                            <option key={td.type} value={td.type}>
+                              {t(`events.trigger.${td.type}` as Parameters<typeof t>[0])}
+                            </option>
+                          ))}
+                        </select>
+                        <input
+                          dir="ltr"
+                          type="text"
+                          value={manualTargetId}
+                          onChange={(e) => setManualTargetId(e.target.value)}
+                          placeholder="Target ID (optional)"
+                          className="w-36 px-2 py-1 text-[11px] rounded border border-white/15 bg-[#121823] text-slate-100 font-mono"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            fireSandboxEvent({
+                              type: manualTriggerType,
+                              targetId: manualTargetId.trim() || undefined,
+                            })
+                          }
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-[11px] font-medium whitespace-nowrap"
+                        >
+                          <Zap className="w-3 h-3" />
+                          {t('sandbox.simulateTriggerBtn')}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const advanced = {
+                              ...eventSimRef.current,
+                              nowSeconds: eventSimRef.current.nowSeconds + 15,
+                            };
+                            eventSimRef.current = advanced;
+                            setEventSimState(advanced);
+                          }}
+                          className="px-2 py-1 rounded border border-white/15 bg-[#182132] text-[11px] text-slate-200 hover:bg-white/10 font-mono tabular-nums"
+                        >
+                          +15s
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const reset = resetSandboxEventStates(
+                              snapshot.events ?? [],
+                              eventSimRef.current,
+                              'on_player_respawn'
+                            );
+                            eventSimRef.current = reset;
+                            setEventSimState(reset);
+                            fireSandboxEvent({ type: 'on_player_respawn' });
+                          }}
+                          className="px-2 py-1 rounded border border-white/15 bg-[#182132] text-[11px] text-slate-200 hover:bg-white/10"
+                        >
+                          {t('sandbox.simulateRespawnBtn')}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="max-h-24 overflow-y-auto space-y-1">
+                      {eventSimState.log.length === 0 ? (
+                        <div className="text-[11px] text-slate-400">
+                          {t('sandbox.eventsLogEmpty')}
+                        </div>
+                      ) : (
+                        eventSimState.log.slice(0, 12).map((entry) => (
+                          <div
+                            key={entry.id}
+                            className="px-2 py-1 rounded border border-white/10 bg-[#0B0F17] text-[11px] flex items-center justify-between gap-2 tabular-nums"
+                          >
+                            <span className="truncate">
+                              <span
+                                className={`font-medium me-2 ${
+                                  entry.status === 'executed'
+                                    ? 'text-emerald-400'
+                                    : entry.status === 'rejected_unsupported'
+                                      ? 'text-red-400'
+                                      : 'text-amber-400'
+                                }`}
+                              >
+                                {entry.status}
+                              </span>
+                              <span className="text-slate-200">{entry.eventName}</span>
+                              {entry.rewardsSummary.length > 0 && (
+                                <span className="text-slate-400 ms-2">
+                                  ({entry.rewardsSummary.join(', ')})
+                                </span>
+                              )}
+                            </span>
+                            <span dir="ltr" className="text-[10px] font-mono text-slate-500 shrink-0">
+                              t={entry.timestampSeconds}s
+                            </span>
+                          </div>
+                        ))
+                      )}
                     </div>
                   </div>
                 )}
